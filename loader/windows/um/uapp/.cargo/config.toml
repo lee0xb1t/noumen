@@ -1,0 +1,6 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+# 就地构建：产物落在本 crate 的 target/，不写到仓库根或其它 crate 的目录。
+
+[unstable]
+build-std = ["std"]

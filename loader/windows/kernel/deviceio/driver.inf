@@ -1,0 +1,46 @@
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = driver.cat
+DriverVer   =
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+noumen_loader.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Standard,NT$ARCH$.10.0...16299
+
+[Standard.NT$ARCH$.10.0...16299]
+%noumen_loader.DeviceDesc% = noumen_loader_Device, Root\noumen_loader
+
+[noumen_loader_Device.NT]
+CopyFiles = File_Copy
+
+[File_Copy]
+noumen_loader.sys
+
+[noumen_loader_Device.NT.Services]
+AddService = noumen_loader,%SPSVCINST_ASSOCSERVICE%, noumen_loader_Service_Inst
+
+[noumen_loader_Service_Inst]
+DisplayName    = %noumen_loader.SVCDESC%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %13%\noumen_loader.sys
+
+[Strings]
+SPSVCINST_ASSOCSERVICE = 0x00000002
+ManufacturerName = "<Your manufacturer name>"
+DiskName = "noumen_loader Installation Disk"
+noumen_loader.DeviceDesc = "noumen_loader Device"
+noumen_loader.SVCDESC = "noumen_loader Service"

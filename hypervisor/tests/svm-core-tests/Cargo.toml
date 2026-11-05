@@ -1,0 +1,16 @@
+[package]
+name = "svm-core-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for the pure SVM logic (VMCB layout, clean bits, MSRPM,
+# exit decoding). The hypervisor crate targets x86_64-unknown-none and cannot
+# use `cargo test`, so this crate includes the modules by path and runs on the
+# host. See AGENTS.md §15.
+
+[dependencies]
+bitfield = "0.19.4"
+spin = "0.12.2"
+
+[workspace]

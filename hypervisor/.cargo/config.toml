@@ -1,0 +1,16 @@
+[build]
+target = "x86_64-unknown-none"
+
+# clang's temp files are redirected in build.rs.
+
+[target.x86_64-unknown-none]
+# The current nightly no longer ships rust-lld on this host; use LLVM's ELF
+# linker, which is the same lld implementation.
+linker = 'C:\Program Files\LLVM\bin\ld.lld.exe'
+rustflags = [
+    "-Cforce-frame-pointers=yes"
+]
+
+[unstable]
+build-std-features = ["compiler-builtins-mem"]
+build-std = ["core", "compiler_builtins"]

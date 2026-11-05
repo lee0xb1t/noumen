@@ -1,0 +1,61 @@
+[package]
+name = "noumen"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "noumen"
+test = false
+bench = false
+
+[features]
+default = [
+    "panic-detail",
+    "buffer-log",
+    "vmx-ept",
+    "svm-npt",
+    "mem",
+]
+# Serial console (COM1) output. Not enabled by default; enable it explicitly
+# when a debug build needs COM1. Combine with `--no-default-features` for
+# shipped images to compile out every port access and every `klog!` call site:
+#   cargo build --release --no-default-features
+serial-console = []
+# Loader-supplied 512-entry log ring: the hypervisor writes records into memory
+# provided via KernelArgs.log_base/log_size. It needs no serial console, so a
+# shipped image can keep the log buffer while dropping COM1 output:
+#   cargo build --release --no-default-features --features buffer-log
+buffer-log = []
+# Full panic context: register snapshot, loader arguments and a symbol-table
+# based backtrace. The report goes to every sink that is compiled in (COM1 with
+# `serial-console`, the loader's ring with `buffer-log`), so it does not imply
+# the serial console and survives in a serial-free image:
+#   cargo build --release --no-default-features --features panic-detail,buffer-log
+# Release builds can drop the whole block with `cargo build --release --no-default-features`.
+panic-detail = []
+# Memory virtualization (EPT): the identity EPT, the MTRR-based memory typing,
+# the EPTP VMCS field, the EPT page pool and the MTRR write exits. Without it
+# the guest runs on the host page tables directly:
+#   cargo build --release --no-default-features --features panic-detail,vmx-ept
+vmx-ept = []
+# SVM nested paging (NPT). The SVM backend itself is always compiled; this
+# switch only enables the identity NPT, NPF handling, NPT hooks/mem and
+# HideSelf. Without it the SVM guest runs on the host page tables.
+svm-npt = []
+# `mem`：客户机内存访问。VMX 走 EPT 视图，SVM 走 identity/direct-map 视图；
+# 两边都提供 MEM_*，因此不再隐含 `vmx-ept`。
+mem = []
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[dependencies]
+bitfield = "0.19.4"
+raw-cpuid = "11.6.0"
+spin = "0.12.2"
+x86 = "0.52.0"
+x86_64 = "0.15.5"
+
+[build-dependencies]
+cc = "1.3.0"

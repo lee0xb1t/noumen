@@ -1,0 +1,36 @@
+[package]
+name = "uapp"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+eframe = "0.37.0"
+ntapi = "=0.4.1"
+winapi = { version = "0.3", features = ["processthreadsapi", "winnt", "debugapi"] }
+
+[dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+embed-resource = "3.0"
+
+[profile.dev.build-override]
+debug = false
+
+[profile.release.build-override]
+debug = false

@@ -1,0 +1,8 @@
+target/
+build/
+.vs/
+__pycache__/
+*.pyc
+*.dmp
+dumps
+dmp/

@@ -1,0 +1,9 @@
+# Host-side test crate: override the repository-wide bare-metal target and the
+# build-std setting from ../../.cargo/config.toml. Cargo reads this file first
+# when invoked from this directory, so the closer values win.
+
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[unstable]
+build-std = []
