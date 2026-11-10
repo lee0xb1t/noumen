@@ -98,13 +98,15 @@ fn unhandled_exit(reason: ExitReason) -> EmulationError {
 }
 
 /// Advance the guest past the instruction that caused the current VM exit.
-pub(super) fn skip_instruction() -> EmulationResult<()> {
-    advance_rip()?;
-    finish_instruction()
+#[inline]
+pub(super) fn skip_instruction(context: &GuestContext) -> EmulationResult<()> {
+    let new_rip = advance_rip()?;
+    finish_instruction(context, new_rip)
 }
 
 /// Advance `GUEST_RIP` by the current VM-exit instruction length.
-fn advance_rip() -> EmulationResult<()> {
+#[inline]
+fn advance_rip() -> EmulationResult<u64> {
     let guest_rip = vmcs::guest::Rip::read()?;
     let inst_len = VmxExitInstructionLength::read()?;
 
@@ -122,11 +124,12 @@ fn advance_rip() -> EmulationResult<()> {
 
     vmcs::guest::Rip::from_raw(new_rip).write()?;
 
-    Ok(())
+    Ok(new_rip)
 }
 
 /// Finish architectural side effects of an emulated instruction.
-fn finish_instruction() -> EmulationResult<()> {
+#[inline]
+fn finish_instruction(context: &GuestContext, new_rip: u64) -> EmulationResult<()> {
     // Only rewrite the interruptibility field when the instruction was in an
     // STI/MOV-SS shadow. The common case is zero, so avoid a VMWRITE.
     let mut interruptibility_state = vmcs::guest::VmxInterruptibilityState::read()?;
@@ -138,20 +141,67 @@ fn finish_instruction() -> EmulationResult<()> {
     }
 
     let rflags = vmcs::guest::Rflags::read()?;
+    let mut need_bs = false;
 
-    // Single-step is the only remaining reason to touch DEBUGCTL/pending #DB.
-    if !rflags.trap_flag() {
-        return Ok(());
+    if rflags.trap_flag() {
+        let debug_ctl = vmcs::guest::Ia32DebugctlRegister::read()?;
+        need_bs = !debug_ctl.btf();
     }
 
-    let debug_ctl = vmcs::guest::Ia32DebugctlRegister::read()?;
+    // Merge enabled execution breakpoints (DR7 RW=00) that match the next RIP
+    // into pending debug exceptions. DR0-DR3 are not VMCS fields; the exit stub
+    // saved the guest values in GuestContext before zeroing the hardware DRs.
+    let dr7 = vmcs::guest::Dr7::read()?.as_raw();
+    let mut bp_matched = 0u64;
 
-    if debug_ctl.btf() {
+    for i in 0..4 {
+        let enable = (1u64 << (i * 2)) | (1u64 << (i * 2 + 1));
+        if dr7 & enable == 0 {
+            continue;
+        }
+
+        if (dr7 >> (16 + i * 4)) & 0b11 != 0 {
+            continue;
+        }
+
+        let dr = match i {
+            0 => context.dr0,
+            1 => context.dr1,
+            2 => context.dr2,
+            _ => context.dr3,
+        };
+
+        if dr == new_rip {
+            bp_matched |= 1u64 << i;
+        }
+    }
+
+    if !need_bs && bp_matched == 0 {
         return Ok(());
     }
 
     let mut pending_debug = vmcs::guest::VmxPendingDebugExceptions::read()?;
-    pending_debug.set_bs(true);
+
+    if need_bs {
+        pending_debug.set_bs(true);
+    }
+
+    if bp_matched & 1 != 0 {
+        pending_debug.set_b0(true);
+    }
+    if bp_matched & 2 != 0 {
+        pending_debug.set_b1(true);
+    }
+    if bp_matched & 4 != 0 {
+        pending_debug.set_b2(true);
+    }
+    if bp_matched & 8 != 0 {
+        pending_debug.set_b3(true);
+    }
+    if bp_matched != 0 {
+        pending_debug.set_enabled_breakpoint(true);
+    }
+
     pending_debug.write()?;
 
     Ok(())

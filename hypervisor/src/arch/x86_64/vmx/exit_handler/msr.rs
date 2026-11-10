@@ -24,7 +24,7 @@ pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         context.rax = value & 0xffff_ffff;
         context.rdx = (value >> 32) & 0xffff_ffff;
 
-        return skip_instruction();
+        return skip_instruction(context);
     }
 
     // CET MSR 没有 VMCS 字段时必须读硬件：CPU 自己会改它们（XRSTOR/SYSRET 会更新
@@ -39,7 +39,7 @@ pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         context.rax = value & 0xffff_ffff;
         context.rdx = (value >> 32) & 0xffff_ffff;
 
-        return skip_instruction();
+        return skip_instruction(context);
     }
 
     // `enable_vmx()` locked the hardware MSR and set VMXON-outside-SMX, so
@@ -52,7 +52,7 @@ pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         context.rax = value & 0xffff_ffff;
         context.rdx = (value >> 32) & 0xffff_ffff;
 
-        return skip_instruction();
+        return skip_instruction(context);
     }
 
     // VMX capability MSRs exist only when CPUID.01H:ECX.VMX is set. The guest
@@ -85,7 +85,7 @@ pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         context.rdx = (v >> 32) & 0xffff_ffff;
     }
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> EmulationResult<()> {
@@ -96,7 +96,7 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
     if msr == x86::msr::IA32_APERF || msr == x86::msr::IA32_MPERF {
         vcpu.backend.as_vmx_mut().perf.set(msr, value);
 
-        return skip_instruction();
+        return skip_instruction(context);
     }
 
     // CET MSR 不写真实硬件：已虚拟化时写 VMCS 字段，否则直接丢弃。
@@ -110,7 +110,7 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
                         .write()
                         .map_err(|_| EmulationError::gp(0))?;
                 }
-                return skip_instruction();
+                return skip_instruction(context);
             }
             msr::IA32_INTERRUPT_SSP_TABLE_ADDR => {
                 if virtualized {
@@ -118,7 +118,7 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
                         .write()
                         .map_err(|_| EmulationError::gp(0))?;
                 }
-                return skip_instruction();
+                return skip_instruction(context);
             }
             _ => {}
         }
@@ -134,7 +134,7 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
 
             vcpu.backend.as_vmx_mut().cet.set(msr, value);
 
-            return skip_instruction();
+            return skip_instruction(context);
         }
     }
 
@@ -170,7 +170,7 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         vmx_vcpu.ept_generation = generation;
     }
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 /// Hypervisor-reserved MSRs. Reads in this range are virtualized and never

@@ -149,7 +149,7 @@ fn emulate_mov_to_cr0(
     let new_cr0 = new_cr0 & vcpu.backend.as_vmx().cached.vmx_cr0_fixed1;
     vmcs::guest::Cr0::new(new_cr0).write()?;
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 fn emulate_mov_to_cr3(
@@ -194,7 +194,7 @@ fn emulate_mov_to_cr3(
 
     new_cr3.write()?;
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 fn emulate_mov_to_cr4(
@@ -262,10 +262,10 @@ fn emulate_mov_to_cr4(
     let new_cr4 = new_cr4 & vcpu.backend.as_vmx().cached.vmx_cr4_fixed1;
     vmcs::guest::Cr4::new(new_cr4).write()?;
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
-fn emulate_clts(_: &mut Vcpu, _: &mut GuestContext) -> EmulationResult<()> {
+fn emulate_clts(_: &mut Vcpu, context: &mut GuestContext) -> EmulationResult<()> {
     // clear CR0.TS in the read shadow
     vmcs::control::Cr0Shadow::write_shadow(
         vmcs::control::Cr0Shadow::read_shadow()? & !cr::Cr0::CR0_TASK_SWITCHED_FLAG,
@@ -275,10 +275,10 @@ fn emulate_clts(_: &mut Vcpu, _: &mut GuestContext) -> EmulationResult<()> {
     vmcs::guest::Cr0::new(vmcs::guest::Cr0::read()?.as_raw() & !cr::Cr0::CR0_TASK_SWITCHED_FLAG)
         .write()?;
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
-fn emulate_lmsw(_: &mut Vcpu, _: &mut GuestContext, value: u16) -> EmulationResult<()> {
+fn emulate_lmsw(_: &mut Vcpu, context: &mut GuestContext, value: u16) -> EmulationResult<()> {
     let new_cr0 = cr::Cr0::from_bits(value as u64);
 
     // update the guest CR0 read shadow
@@ -300,7 +300,7 @@ fn emulate_lmsw(_: &mut Vcpu, _: &mut GuestContext, value: u16) -> EmulationResu
     real_cr0.set_task_switched(new_cr0.task_switched());
     real_cr0.write()?;
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 fn emulate_mov_from_cr3(
@@ -310,5 +310,5 @@ fn emulate_mov_from_cr3(
 ) -> EmulationResult<()> {
     context.write_gpr(*gpr, vmcs::guest::Cr3::read()?.as_raw())?;
 
-    skip_instruction()
+    skip_instruction(context)
 }

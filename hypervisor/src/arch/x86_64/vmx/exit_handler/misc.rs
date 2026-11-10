@@ -79,7 +79,7 @@ pub(super) fn emulate_xsetbv(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emu
         return Err(EmulationError::gp(0));
     }
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 pub(super) fn emulate_vmxon(_: &Vcpu, _: &mut GuestContext) -> EmulationResult<()> {
@@ -99,9 +99,9 @@ pub(super) fn emulate_vmcall(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emu
     // RIP advances only after the hypercall fully succeeds. STOP 也一样: 先把
     // RIP 推过 VMCALL, 停止之后 guest 才从下一条指令继续.
     match crate::arch::x86_64::vmx::hypercall::dispatch(context, crate::hv::hypercall_key(), vcpu) {
-        Ok(()) => skip_instruction(),
+        Ok(()) => skip_instruction(context),
         Err(EmulationError::Stop) => {
-            skip_instruction()?;
+            skip_instruction(context)?;
             Err(EmulationError::Stop)
         }
         Err(e) => Err(e),

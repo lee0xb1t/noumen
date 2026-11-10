@@ -22,13 +22,6 @@
 .equ GC_CR8,   136
 # GuestContext 保留 XMM 区域（0xC0..0x1BF），但 stub 不保存 XMM；root 不得使用 SSE/XMM。
 
-.section .rodata
-.align 16
-# INVVPID descriptor: current GUEST_VPID = 1.
-invvpid_desc:
-    .word 1
-    .zero 14
-
 .text
 .globl vm_exit
 .type vm_exit, @function
@@ -39,75 +32,7 @@ invvpid_desc:
 .extern fatal_vmresume_error
 
 vm_exit:
-    # 裸 CPUID：只判断 exit reason，执行 cpuid、RIP += 2、vmresume；不做过滤/单步处理。
-    pushq   %rbx
-    pushq   %rdx
-
-    movq    $0x4402, %rbx          # VM_EXIT_REASON
-    vmread  %rbx, %rdx
-    andl    $0xFFFF, %edx
-    cmpl    $10, %edx              # EXIT_REASON_CPUID
-    jne     .Lcheck_invpcid
-
-    cpuid
-
-    # 保存 CPUID 输出，借用 r8/r9 推进 RIP。
-    pushq   %r8
-    pushq   %r9
-    movq    $0x681E, %r8           # GUEST_RIP
-    vmread  %r8, %r9
-    addq    $2, %r9                # CPUID = 0F A2
-    movq    $0x681E, %r8
-    vmwrite %r9, %r8
-    popq    %r9
-    popq    %r8
-    addq    $16, %rsp              # 丢弃入口保存的 guest RBX/RDX
-    vmresume
-    jmp     vmresume_failed
-
-.Lcheck_invpcid:
-    cmpl    $58, %edx              # EXIT_REASON_INVPCID
-    jne     .Lvm_exit_slow
-
-    # INVPCID fast path. The C path only invalidates the current VPID and
-    # advances RIP; mirror that here without entering Rust. Keep the simplified
-    # type mapping and fixed GUEST_VPID from `tlb::emulate_invpcid`.
-    pushq   %rax
-    pushq   %rcx
-    pushq   %r8
-    pushq   %r9
-
-    movq    $0x440C, %r8           # VM_EXIT_INSTRUCTION_LENGTH
-    vmread  %r8, %rax
-    movq    $0x681E, %r8           # GUEST_RIP
-    vmread  %r8, %r9
-    addq    %rax, %r9
-    vmwrite %r9, %r8
-
-    movl    %ecx, %eax
-    andl    $3, %eax
-    movl    $3, %ecx               # SingleContextRetainingGlobals
-    cmpl    $2, %eax
-    jne     1f
-    movl    $1, %ecx               # SingleContext
-
-1:
-    leaq    invvpid_desc(%rip), %rdx
-    # invvpid (%rdx), %rcx; LLVM's AT&T parser rejects the mnemonic here.
-    .byte   0x66, 0x0f, 0x38, 0x81, 0x0a
-
-    popq    %r9
-    popq    %r8
-    popq    %rcx
-    popq    %rax
-    popq    %rdx                   # 入口保存的 guest RDX
-    popq    %rbx                   # 入口保存的 guest RBX
-    vmresume
-    jmp     vmresume_failed
-
-.Lvm_exit_slow:
-    popq    %rdx
-    popq    %rbx
+    # 所有 VM-exit 都走 C：这里只构造 GuestContext。
     subq    $0x1C0, %rsp
 
     movq    %rax, GC_RAX(%rsp)

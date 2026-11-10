@@ -90,7 +90,7 @@ python build.py --hypercall-key 0x2b3d   # nsvr 的默认 key（缺省 0x10F2C�
 - **`native-bp` 依赖 `vmx-ept`，默认关闭**：控制 VMX 原生断点（`UserBreakpoint`）、`#BP`/`#CP` 异常位图和 NMI exiting。需要时显式加 `native-bp`；关闭时不拦截 `#BP`/`#CP`/NMI，原生断点和等待命令返回 `3`，适合只用 `MEM_*`/HideSelf 的镜像；此时 EPT detour/HideSelf 仍可用。
 - `POOL_PAGES`：开启 `vmx-ept` 或 `svm-npt` 时为 8192（32 MiB），否则 2048；页池不够时 EPT/NPT 初始化会失败。
   页池预算（`MAX_CPUS == 32`，最坏情况=2 MiB 模式覆盖 64 GiB）：每 vCPU 约 79 页（1 PML4 + 1 PDPT + 64 个 PD 表 + 1 dummy + 12 页 VMXON/VMCS/MSR bitmap/hide/host），32 核约 2528 页；宿主页表 514 页，内部日志环 20 页，合计约 3062 页；hook 拆表页和 fake/trampoline 副本再预留 2048 页，峰值约 5110 页（20 MiB）。1 GiB 模式每 vCPU 约 3 页（1 PML4 + 1 PDPT + 1 dummy），混合 MTRR 段每段再加 1 张 PD 表。NPT 同样按 `min(2^MAXPHYADDR, 1 TiB)`（1 GiB 叶）或 64 GiB（2 MiB 叶）覆盖，每 vCPU 约 3–66 页。
-- **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。两个控制位读回不生效或加载时 CET 未打开时，C 路径的 `emulate_cpuid` 会屏蔽 CET；但 **VMX CPUID 裸透传不经过 C 路径**，当前 VMX guest 会看到未屏蔽的 leaf 7，可能在 CET 未虚拟化时启用 CET 并触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
+- **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。CPUID 当前是裸透传，不再屏蔽 leaf 7；如果 CET 控制位读回不生效或加载时 CET 未打开，guest 仍可能看到 CET 支持，从而触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
 - `vmx-ept` 关闭时，VMX 仍可编译（guest 直接跑宿主页表），但 EPT hook/mem、HideSelf 代码不编译，且 `enable_vpid`/`unrestricted_guest` 这两个 EPT 依赖控制位会关闭；相关 hypercall 返回 `RAX = 3`。
 - `svm-npt` 关闭时：SVM 核心仍编译（VMCB、VMRUN、CPUID/MSR、异常、devirt、ping/log/Stop），只关闭 `svm/npt`、NPF、NPT hook/mem、HideSelf 和 `NP_ENABLE`；guest 运行在宿主页表上，NPT 相关 hypercall 返回 `3`。共享 `Hypercall` enum 仍保留 `0x30..0x3a` 编号（ABI 不变）。`tests/svm-core-tests` 仍会把纯 SVM 模块按路径编进宿主测试，和主二进制的 feature 无关。
 - `buffer-log` 关闭时，`klog!` 的调用点仍在（参数参与类型检查），但不会写日志。
@@ -301,8 +301,9 @@ RIP 推进只能有一个所有者：
 - **DR 隔离**：VMX 慢路径保存 guest DR0–3 后将其清零，C 运行期间不可见；`vmresume` 前从 `GuestContext` 恢复。DR6 不存 `GuestContext`，硬件保留 guest 值。
 - **vm_stop 前必须恢复全部 guest GPR**：`vm_stop` 只处理 RAX/RDX/RBP 的 iretq 帧；不要在恢复 RCX/RBX/…/R14 之前跳到 `vm_stop`。
 - **exit 同步代**：EPT 内存类型、EPT hook、HideSelf 的变更共用一个 `EXIT_SYNC_GENERATION`；慢路径入口只读一次，变化时才分别检查各子系统的 applied generation。
-- **skip_instruction 分层**：`advance_rip` 只推进 RIP；`finish_instruction` 只在 STI/MOV-SS shadow 非零时清 interruptibility，只有 TF=1 时才读 DEBUGCTL/pending #DB。
-- **CPUID 裸透传**：`vmx/stub.S` 在 `vm_exit` 入口只读 `VM_EXIT_REASON`；如果是 CPUID，就直接在 root 执行 `cpuid`，`RIP += 2`，然后 `vmresume`。**不走 C handler，不做 leaf 过滤**：leaf 1 的 ECX[5]/[31]、`0x40000000..0x40000010`、leaf 7 CET 都不再屏蔽；也不处理 TF/MTF/CS.L/带前缀 CPUID，也不清 STI/MOV-SS interruptibility。这是性能优先路径，代价是暴露 VMX/hypervisor 位、可能让 guest 在 CET 未虚拟化时看到 CET，并可能破坏单步/hide 状态。需要恢复语义时，在 stub 里加回过滤/回退，或把 fast path 限制到安全 leaf。
+- **skip_instruction 分层**：`advance_rip` 推进 RIP（含 4 GiB 边界的兼容模式截断）；`finish_instruction` 清 STI/MOV-SS shadow，TF=1 且 BTF=0 时置 pending BS，并把 DR7 使能的执行断点（匹配新 RIP）合并为 pending B0–B3 + enabled breakpoint。DR0–DR3 从 `GuestContext` 读，因为 C 运行期间硬件 DR 已被清零。
+- **CPUID**：所有 CPUID VM-exit 都走 `emulate_cpuid`（stub 不再有 fast path），但 handler 只执行原生 `cpuid` 并把结果原样写回，不做 leaf 过滤。leaf 1 的 VMX/hypervisor 位、leaf 7 的 CET、`0x4000_0000..` 的 hypervisor leaves 都按宿主原值返回；不存在的 leaf 由硬件按自身规则返回（Intel 通常返回最高 basic leaf 的数据），不是 noumen 清零。随后 `skip_instruction` 统一处理 RIP 回绕、interrupt shadow、TF/DR pending debug。
+- **INVPCID**：所有 INVPCID VM-exit 都走 C 的 `tlb::emulate_invpcid`，执行 `invvpid` 后由 `skip_instruction` 推进 RIP；没有 asm fast path。
 - **当前开启的 VMX 控制位**（其余为 0；`write_adjust()` 可能清掉 CPU/外层 VMM 不支持的位）：
   - pin-based：`virtual_nmi`、`nmi_exiting`（仅 `native-bp`；关闭时为 0）；
   - primary：`use_msr_bitmaps`、`activate_secondary_controls`；`rdtsc_exiting`、`use_tsc_offsetting`、`cr3_load_exiting` **显式 0**；
@@ -316,7 +317,6 @@ RIP 推进只能有一个所有者：
   - `0x480..=0x491` 是只读的 VMX capability MSR；guest 读走 `emulate_rdmsr` 注入 `#GP(0)`，写不拦截，由硬件直接 `#GP`。
   - `0x4000_0000..=0x4000_00FF` 没有体系结构 backing，`RDMSR`/`WRMSR` 都注入 `#GP(0)`；不要返回 0，否则与裸机不一致，也是可检测信号。
   - `emulate_rdmsr` 顺序为 APERF/MPERF → CET → `IA32_FEATURE_CONTROL` → VMX capability → hypervisor MSR → safe fallback，并标记 `#[inline]`。
-- **INVPCID fast path**：`vmx/stub.S` 对 exit reason 58 直接读 instruction length、推进 RIP、用静态 `INVVPID` 描述符失效当前 VPID，然后 `vmresume`；不再进入 C 的 `skip_instruction`。它沿用 C 路径的简化类型映射和固定 `GUEST_VPID=1`，也不处理单步/中断 shadow。
 
 ### 9.2 EPT hook
 
@@ -370,7 +370,7 @@ Free → InFlight → Active → Closing → Retired → Free
 
 ### 9.6 CET（影子栈）
 
-- **注意：当前 VMX CPUID 裸透传不经过 `emulate_cpuid`，下面对 leaf 7 的 CET 屏蔽只在 C 路径生效。** 如果 CET 未虚拟化，guest 读到 CET 支持后可能启用，导致 `#CP`/`0xEF`；需要保留屏蔽时，必须让 leaf 7 回到 C 路径或在 stub 里单独过滤。
+- **注意：VMX CPUID 现在是裸透传，CET 未虚拟化时 leaf 7 的 CET 位不会被屏蔽；如果 guest 因此启用 CET，可能出现 `#CP`/`0xEF`。**
 - VMX 不自动保存 XCR0/CET。不开 "load CET state"/"load IA32_CET state" 时，VM exit 不保存 guest 的 `SSP`/`IA32_S_CET`，用户态 `ret` 会在影子栈上失配 → `#CP` → Windows 转成 `FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS`（`0xC0000409`）；critical process 因此退出 → `0xEF`；
 - 控制位：VM-entry bit 20 `load_cet_state`、VM-exit bit 28 `load_ia32_cet_state`；字段：guest `S_CET`/`SSP`/`INTR_SSP_TABLE` = `0x6828/0x682a/0x682c`，host 对应 `0x6c18/0x6c1a/0x6c1c`（`x86` crate 没有这些常量，定义在 `vmcs/guest.rs`、`vmcs/host.rs`）；
 - root 侧必须关闭 supervisor 影子栈：`HOST_S_CET = HOST_SSP = HOST_INTR_SSP_TABLE = 0`。否则 noumen 在 root 里的 `call`/`ret` 会消费 guest 的影子栈；

@@ -13,7 +13,7 @@ pub(super) fn emulate_rdtsc(_vcpu: &mut Vcpu, context: &mut GuestContext) -> Emu
     context.rax = tsc & 0xffff_ffff;
     context.rdx = (tsc >> 32) & 0xffff_ffff;
 
-    skip_instruction()
+    skip_instruction(context)
 }
 
 pub(super) fn emulate_rdtscp(_vcpu: &mut Vcpu, context: &mut GuestContext) -> EmulationResult<()> {
@@ -23,5 +23,5 @@ pub(super) fn emulate_rdtscp(_vcpu: &mut Vcpu, context: &mut GuestContext) -> Em
     context.rdx = (tsc >> 32) & 0xffff_ffff;
     context.rcx = aux as u64;
 
-    skip_instruction()
+    skip_instruction(context)
 }

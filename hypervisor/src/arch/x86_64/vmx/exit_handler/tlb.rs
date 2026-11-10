@@ -16,5 +16,5 @@ pub(super) fn emulate_invpcid(vcpu: &mut Vcpu, context: &mut GuestContext) -> Em
     }
     .invvpid();
 
-    skip_instruction()
+    skip_instruction(context)
 }
