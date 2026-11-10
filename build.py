@@ -34,8 +34,8 @@ HYPERVISOR_DIR = REPO_ROOT / "hypervisor"
 LOADER_WINDOWS = REPO_ROOT / "loader" / "windows"
 PROBE_DIR = REPO_ROOT / "tools" / "rdtsc_probe"
 
-DEFAULT_FEATURES = ["panic-detail", "buffer-log", "vmx-ept", "native-bp", "svm-npt", "mem"]
-OPTIONAL_FEATURES = ["serial-console"]
+DEFAULT_FEATURES = ["panic-detail", "buffer-log", "vmx-ept", "svm-npt", "mem"]
+OPTIONAL_FEATURES = ["serial-console", "native-bp"]
 KNOWN_FEATURES = [*OPTIONAL_FEATURES, *DEFAULT_FEATURES]
 
 

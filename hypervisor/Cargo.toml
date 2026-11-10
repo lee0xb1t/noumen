@@ -13,7 +13,6 @@ default = [
     "panic-detail",
     "buffer-log",
     "vmx-ept",
-    "native-bp",
     "svm-npt",
     "mem",
 ]
@@ -41,9 +40,10 @@ panic-detail = []
 vmx-ept = []
 # VMX native breakpoints: UserBreakpoint hooks, the #BP exception bitmap, NMI
 # exiting/window handling and the breakpoint wait hypercalls. It depends on
-# `vmx-ept`. Disable it for MEM_*/HideSelf-only builds to avoid #BP/#CP/NMI
-# exits entirely:
-#   cargo build --release --no-default-features --features buffer-log,vmx-ept,mem
+# `vmx-ept` and is NOT in the default feature set; enable it explicitly when
+# native breakpoints are needed:
+#   cargo build --release --features native-bp
+# Leave it off for MEM_*/HideSelf-only builds to avoid #BP/#CP/NMI exits.
 native-bp = ["vmx-ept"]
 # SVM nested paging (NPT). The SVM backend itself is always compiled; this
 # switch only enables the identity NPT, NPF handling, NPT hooks/mem and

@@ -24,7 +24,7 @@ The loader in this repository is a Windows kernel driver. It allocates nonpaged 
 | `buffer-log` | Yes | 512-entry log ring; loader-provided or allocated from the page pool |
 | `panic-detail` | Yes | Panic register snapshot, `KernelArgs`, and symbol backtrace |
 | `vmx-ept` | Yes | Intel backend, identity EPT, EPT hook/mem |
-| `native-bp` | Yes | VMX native breakpoints, #BP/#CP/NMI exits; depends on `vmx-ept` |
+| `native-bp` | No | VMX native breakpoints, #BP/#CP/NMI exits; enable explicitly when needed, depends on `vmx-ept` |
 | `svm-npt` | Yes | AMD identity NPT, NPF, NPT hook/mem |
 | `mem` | Yes | Generic `MEM_*` service, implemented per backend |
 
@@ -32,7 +32,7 @@ Notes:
 
 - `mem` does not imply `vmx-ept` or `svm-npt`; add the backend feature explicitly with `--no-default-features`.
 - With a backend feature disabled, the core still compiles and related hook/mem hypercalls return `RAX = 3`; VMX EPT hook/HideSelf are not compiled, and `enable_vpid`/`unrestricted_guest` are off.
-- `native-bp` depends on `vmx-ept` and is enabled by default. MEM_*/HideSelf-only builds can disable it; `#BP`/`#CP`/NMI are then not intercepted, native breakpoint and wait commands return `3`, and the associated TSC inflation disappears.
+- `native-bp` is off by default; enable it explicitly (it depends on `vmx-ept`) when `UserBreakpoint`/`#BP`/`#CP`/NMI are needed. Leave it off for MEM_*/HideSelf-only builds to avoid the associated TSC inflation.
 - With both `serial-console` and `buffer-log` disabled, `klog!` still type-checks its arguments but produces no output.
 
 When using `serial-console`, Windows owns COM1; the solution is to delete `C:\WINDOWS\System32\drivers\serial.sys`.

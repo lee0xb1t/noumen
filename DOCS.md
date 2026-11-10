@@ -80,14 +80,14 @@ python build.py --hypercall-key 0x2b3d   # nsvr 的默认 key（缺省 0x10F2C�
 | `buffer-log` | 是 | 512 条日志环（约 76 KiB）；loader 提供，或 `log_base == 0` 时从页池分配内部环 |
 | `panic-detail` | 是 | panic 寄存器快照、KernelArgs、符号回溯 |
 | `vmx-ept` | 是 | Intel 后端 + identity EPT + EPT hook/mem |
-| `native-bp` | 是 | VMX 原生断点、`#BP`/`#CP`/NMI 拦截；依赖 `vmx-ept` |
+| `native-bp` | 否 | VMX 原生断点、`#BP`/`#CP`/NMI 拦截；需要时显式开启，依赖 `vmx-ept` |
 | `svm-npt` | 是 | AMD 的 identity NPT、NPF、NPT hook/mem、HideSelf |
 | `mem` | 是 | `MEM_*` 通用内存服务；后端各自实现 |
 
 关键规则：
 
 - `mem` **不再隐含** `vmx-ept`。构建时若只要内存服务，必须显式同时给后端 feature。
-- **`native-bp` 依赖 `vmx-ept`，默认开启**：控制 VMX 原生断点（`UserBreakpoint`）、`#BP`/`#CP` 异常位图和 NMI exiting。关闭后不拦截 `#BP`/`#CP`/NMI，原生断点和等待命令返回 `3`，适合只用 `MEM_*`/HideSelf 的镜像；此时 EPT detour/HideSelf 仍可用。
+- **`native-bp` 依赖 `vmx-ept`，默认关闭**：控制 VMX 原生断点（`UserBreakpoint`）、`#BP`/`#CP` 异常位图和 NMI exiting。需要时显式加 `native-bp`；关闭时不拦截 `#BP`/`#CP`/NMI，原生断点和等待命令返回 `3`，适合只用 `MEM_*`/HideSelf 的镜像；此时 EPT detour/HideSelf 仍可用。
 - `POOL_PAGES`：开启 `vmx-ept` 或 `svm-npt` 时为 8192（32 MiB），否则 2048；页池不够时 EPT/NPT 初始化会失败。
   页池预算（`MAX_CPUS == 32`，最坏情况=2 MiB 模式覆盖 64 GiB）：每 vCPU 约 79 页（1 PML4 + 1 PDPT + 64 个 PD 表 + 1 dummy + 12 页 VMXON/VMCS/MSR bitmap/hide/host），32 核约 2528 页；宿主页表 514 页，内部日志环 20 页，合计约 3062 页；hook 拆表页和 fake/trampoline 副本再预留 2048 页，峰值约 5110 页（20 MiB）。1 GiB 模式每 vCPU 约 3 页（1 PML4 + 1 PDPT + 1 dummy），混合 MTRR 段每段再加 1 张 PD 表。NPT 同样按 `min(2^MAXPHYADDR, 1 TiB)`（1 GiB 叶）或 64 GiB（2 MiB 叶）覆盖，每 vCPU 约 3–66 页。
 - **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。两个控制位读回不生效或加载时 CET 未打开时，C 路径的 `emulate_cpuid` 会屏蔽 CET；但 **VMX CPUID 裸透传不经过 C 路径**，当前 VMX guest 会看到未屏蔽的 leaf 7，可能在 CET 未虚拟化时启用 CET 并触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
