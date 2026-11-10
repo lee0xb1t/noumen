@@ -24,7 +24,9 @@ static MEMORY_TYPE_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 /// 标记「内存类型已变」，返回新代。
 pub fn bump_memory_type_generation() -> u32 {
-    MEMORY_TYPE_GENERATION.fetch_add(1, Ordering::AcqRel) + 1
+    let generation = MEMORY_TYPE_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    crate::arch::x86_64::vmx::state::bump_exit_sync_generation();
+    generation
 }
 
 /// 当前代。等于某个 vCPU 记录的代数时，它的 EPT 类型是最新的。

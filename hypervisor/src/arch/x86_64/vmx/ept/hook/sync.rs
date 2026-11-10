@@ -88,7 +88,9 @@ fn apply_breakpoint_owner(
 }
 
 pub(crate) fn bump_generation() -> u32 {
-    GENERATION.fetch_add(1, Ordering::AcqRel) + 1
+    let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    crate::arch::x86_64::vmx::state::bump_exit_sync_generation();
+    generation
 }
 
 /// 某个 vCPU 应用某一代时，每个槽位/页只打一次失败日志，避免刷屏。

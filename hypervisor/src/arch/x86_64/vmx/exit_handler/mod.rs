@@ -99,6 +99,12 @@ fn unhandled_exit(reason: ExitReason) -> EmulationError {
 
 /// Advance the guest past the instruction that caused the current VM exit.
 pub(super) fn skip_instruction() -> EmulationResult<()> {
+    advance_rip()?;
+    finish_instruction()
+}
+
+/// Advance `GUEST_RIP` by the current VM-exit instruction length.
+fn advance_rip() -> EmulationResult<()> {
     let guest_rip = vmcs::guest::Rip::read()?;
     let inst_len = VmxExitInstructionLength::read()?;
 
@@ -116,23 +122,37 @@ pub(super) fn skip_instruction() -> EmulationResult<()> {
 
     vmcs::guest::Rip::from_raw(new_rip).write()?;
 
-    // if we're currently blocking interrupts (due to mov ss or sti)
-    // then we should unblock them since we just emulated an instruction
-    let mut interruptibility_state = vmcs::guest::VmxInterruptibilityState::read()?;
-    interruptibility_state.set_blocking_by_mov_ss(false);
-    interruptibility_state.set_blocking_by_sti(false);
-    interruptibility_state.write()?;
+    Ok(())
+}
 
-    let debug_ctl = vmcs::guest::Ia32DebugctlRegister::read()?;
+/// Finish architectural side effects of an emulated instruction.
+fn finish_instruction() -> EmulationResult<()> {
+    // Only rewrite the interruptibility field when the instruction was in an
+    // STI/MOV-SS shadow. The common case is zero, so avoid a VMWRITE.
+    let mut interruptibility_state = vmcs::guest::VmxInterruptibilityState::read()?;
+
+    if interruptibility_state.as_u32() & 0b11 != 0 {
+        interruptibility_state.set_blocking_by_mov_ss(false);
+        interruptibility_state.set_blocking_by_sti(false);
+        interruptibility_state.write()?;
+    }
+
     let rflags = vmcs::guest::Rflags::read()?;
 
-    // if we're single-stepping, inject a debug exception
-    // just like normal instruction execution would
-    if rflags.trap_flag() && !debug_ctl.btf() {
-        let mut pending_debug = vmcs::guest::VmxPendingDebugExceptions::read()?;
-        pending_debug.set_bs(true);
-        pending_debug.write()?;
+    // Single-step is the only remaining reason to touch DEBUGCTL/pending #DB.
+    if !rflags.trap_flag() {
+        return Ok(());
     }
+
+    let debug_ctl = vmcs::guest::Ia32DebugctlRegister::read()?;
+
+    if debug_ctl.btf() {
+        return Ok(());
+    }
+
+    let mut pending_debug = vmcs::guest::VmxPendingDebugExceptions::read()?;
+    pending_debug.set_bs(true);
+    pending_debug.write()?;
 
     Ok(())
 }

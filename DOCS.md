@@ -298,6 +298,8 @@ RIP 推进只能有一个所有者：
 - **exit stub 不保存 XMM**：`vmx/stub.S` 和 `svm/stub.S` 不再 `movaps` 保存/恢复 XMM0–15；`GuestContext` 仍保留 XMM 区域（0xC0–0x1BF）但内容未定义。root（Rust + `compiler_builtins`）**必须保持不使用 SSE/XMM**；当前 debug/release 反汇编在 stub 之外是 **0 条 XMM 指令**。以后引入浮点、SIMD 或 SSE `memcpy` 时，必须恢复 XMM 保存，或在构建时显式禁用 SSE 并重新验证反汇编。
 - **DR 隔离**：VMX 慢路径保存 guest DR0–3 后将其清零，C 运行期间不可见；`vmresume` 前从 `GuestContext` 恢复。DR6 不存 `GuestContext`，硬件保留 guest 值。
 - **vm_stop 前必须恢复全部 guest GPR**：`vm_stop` 只处理 RAX/RDX/RBP 的 iretq 帧；不要在恢复 RCX/RBX/…/R14 之前跳到 `vm_stop`。
+- **exit 同步代**：EPT 内存类型、EPT hook、HideSelf 的变更共用一个 `EXIT_SYNC_GENERATION`；慢路径入口只读一次，变化时才分别检查各子系统的 applied generation。
+- **skip_instruction 分层**：`advance_rip` 只推进 RIP；`finish_instruction` 只在 STI/MOV-SS shadow 非零时清 interruptibility，只有 TF=1 时才读 DEBUGCTL/pending #DB。
 - **CPUID 裸透传**：`vmx/stub.S` 在 `vm_exit` 入口只读 `VM_EXIT_REASON`；如果是 CPUID，就直接在 root 执行 `cpuid`，`RIP += 2`，然后 `vmresume`。**不走 C handler，不做 leaf 过滤**：leaf 1 的 ECX[5]/[31]、`0x40000000..0x40000010`、leaf 7 CET 都不再屏蔽；也不处理 TF/MTF/CS.L/带前缀 CPUID，也不清 STI/MOV-SS interruptibility。这是性能优先路径，代价是暴露 VMX/hypervisor 位、可能让 guest 在 CET 未虚拟化时看到 CET，并可能破坏单步/hide 状态。需要恢复语义时，在 stub 里加回过滤/回退，或把 fast path 限制到安全 leaf。
 - **当前开启的 VMX 控制位**（其余为 0；`write_adjust()` 可能清掉 CPU/外层 VMM 不支持的位）：
   - pin-based：`virtual_nmi`、`nmi_exiting`；

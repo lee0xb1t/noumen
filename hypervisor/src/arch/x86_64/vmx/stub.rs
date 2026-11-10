@@ -36,9 +36,7 @@ extern "C" fn handle_vm_exit_stub(context: &mut GuestContext) -> bool {
     {
         let cpu_id = vcpu.cpu_id;
 
-        vcpu.backend.as_vmx_mut().sync_ept_memory_types();
-        crate::arch::x86_64::vmx::ept::hook::sync(cpu_id, vcpu.backend.as_vmx_mut());
-        crate::arch::x86_64::vmx::ept::hide_self::sync(cpu_id, vcpu.backend.as_vmx_mut());
+        vcpu.backend.as_vmx_mut().sync_exit_state(cpu_id);
     }
 
     let reason = match VmxExitReason::read() {

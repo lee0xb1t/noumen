@@ -48,6 +48,7 @@ pub fn hide(vmx: &mut VmxVcpu, cpu_id: u32) -> Result<u32, HookError> {
     let hidden = apply(vmx, cpu_id)?;
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
 
+    crate::arch::x86_64::vmx::state::bump_exit_sync_generation();
     vmx.hide_self_generation = generation;
 
     Ok(hidden)

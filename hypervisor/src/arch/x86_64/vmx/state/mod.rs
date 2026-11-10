@@ -31,6 +31,25 @@ pub mod perf;
 /// 现在是**按需同步**（只在 guest 读时累加），退出路径零开销，所以默认开。
 pub const ENABLE_PERF: bool = true;
 
+/// Global generation for the exit-time EPT/hook/HideSelf sync checks.
+///
+/// Any change that can make a vCPU's EPT or hook view stale bumps this one
+/// counter. The exit path then needs a single atomic load in the common case;
+/// only the slow path consults the per-subsystem generations.
+#[cfg(feature = "vmx-ept")]
+static EXIT_SYNC_GENERATION: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(feature = "vmx-ept")]
+pub fn bump_exit_sync_generation() {
+    EXIT_SYNC_GENERATION.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+}
+
+#[cfg(feature = "vmx-ept")]
+pub fn current_exit_sync_generation() -> u32 {
+    EXIT_SYNC_GENERATION.load(core::sync::atomic::Ordering::Acquire)
+}
+
 #[derive(Debug)]
 pub struct VmxCachedData {
     pub xcr0_unsupported_mask: u64,
@@ -181,6 +200,9 @@ pub struct VmxVcpu {
     /// 本核断点 owner generation；owner 变化只影响断点页。
     #[cfg(feature = "vmx-ept")]
     pub breakpoint_generation: u32,
+    /// 本核已经应用到的全局 exit-sync generation。
+    #[cfg(feature = "vmx-ept")]
+    pub exit_sync_generation: u32,
     /// 正在被 MTF 单步放行的 hook 页 (EPT 断点命中后临时恢复原页).
     ///
     /// IMPORTANT: 只有本核能看到这个状态, 而 MTF 也只在本核的 VMCS 里,
@@ -213,6 +235,8 @@ impl VmxVcpu {
             hide_self_generation: 0,
             #[cfg(feature = "vmx-ept")]
             breakpoint_generation: 0,
+            #[cfg(feature = "vmx-ept")]
+            exit_sync_generation: 0,
             #[cfg(feature = "vmx-ept")]
             hook_pending: None,
             #[cfg(feature = "vmx-ept")]
@@ -262,6 +286,26 @@ impl VmxVcpu {
 
         instruction::Invept::single(self.ept.eptp().as_raw());
         self.ept_generation = generation;
+    }
+
+    /// Apply all exit-time EPT/hook/HideSelf updates for this vCPU.
+    ///
+    /// The common case is one atomic load and a compare; per-subsystem
+    /// generations still gate the expensive work after a real change.
+    #[cfg(feature = "vmx-ept")]
+    #[inline]
+    pub fn sync_exit_state(&mut self, cpu_id: u32) {
+        let generation = current_exit_sync_generation();
+
+        if self.exit_sync_generation == generation {
+            return;
+        }
+
+        self.sync_ept_memory_types();
+        ept::hook::sync(cpu_id, self);
+        ept::hide_self::sync(cpu_id, self);
+
+        self.exit_sync_generation = generation;
     }
 
     pub fn setup(&mut self, host: &HostState, vcpu: *const Vcpu) -> HvResult<()> {
