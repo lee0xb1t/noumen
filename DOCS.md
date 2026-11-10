@@ -91,7 +91,7 @@ python build.py --hypercall-key 0x2b3d   # nsvr 的默认 key（缺省 0x10F2C�
 - `POOL_PAGES`：开启 `vmx-ept` 或 `svm-npt` 时为 8192（32 MiB），否则 2048；页池不够时 EPT/NPT 初始化会失败。
   页池预算（`MAX_CPUS == 32`，最坏情况=2 MiB 模式覆盖 64 GiB）：每 vCPU 约 79 页（1 PML4 + 1 PDPT + 64 个 PD 表 + 1 dummy + 12 页 VMXON/VMCS/MSR bitmap/hide/host），32 核约 2528 页；宿主页表 514 页，内部日志环 20 页，合计约 3062 页；hook 拆表页和 fake/trampoline 副本再预留 2048 页，峰值约 5110 页（20 MiB）。1 GiB 模式每 vCPU 约 3 页（1 PML4 + 1 PDPT + 1 dummy），混合 MTRR 段每段再加 1 张 PD 表。NPT 同样按 `min(2^MAXPHYADDR, 1 TiB)`（1 GiB 叶）或 64 GiB（2 MiB 叶）覆盖，每 vCPU 约 3–66 页。
 - **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。两个控制位读回不生效或加载时 CET 未打开时，C 路径的 `emulate_cpuid` 会屏蔽 CET；但 **VMX CPUID 裸透传不经过 C 路径**，当前 VMX guest 会看到未屏蔽的 leaf 7，可能在 CET 未虚拟化时启用 CET 并触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
-- `vmx-ept` 关闭时，VMX 仍可编译（guest 直接跑宿主页表），但 EPT hook/mem 代码不编译；相关 hypercall 返回 `RAX = 3`。
+- `vmx-ept` 关闭时，VMX 仍可编译（guest 直接跑宿主页表），但 EPT hook/mem、HideSelf 代码不编译，且 `enable_vpid`/`unrestricted_guest` 这两个 EPT 依赖控制位会关闭；相关 hypercall 返回 `RAX = 3`。
 - `svm-npt` 关闭时：SVM 核心仍编译（VMCB、VMRUN、CPUID/MSR、异常、devirt、ping/log/Stop），只关闭 `svm/npt`、NPF、NPT hook/mem、HideSelf 和 `NP_ENABLE`；guest 运行在宿主页表上，NPT 相关 hypercall 返回 `3`。共享 `Hypercall` enum 仍保留 `0x30..0x3a` 编号（ABI 不变）。`tests/svm-core-tests` 仍会把纯 SVM 模块按路径编进宿主测试，和主二进制的 feature 无关。
 - `buffer-log` 关闭时，`klog!` 的调用点仍在（参数参与类型检查），但不会写日志。
 - `buffer-log` 的环有两种来源：loader 通过 `KernelArgs.log_base/log_size` 提供；或 `log::init(0, _)` 从页池分配 hypervisor 自有的内部环（当前 20 页 = 77872 字节），此时 `log_size` 被忽略，guest 用 `FLUSH_LOGS` 取走记录。内部环要求页池已初始化，所以 `memory::init()` 必须在 `log::init()` 之前。
@@ -306,12 +306,16 @@ RIP 推进只能有一个所有者：
 - **当前开启的 VMX 控制位**（其余为 0；`write_adjust()` 可能清掉 CPU/外层 VMM 不支持的位）：
   - pin-based：`virtual_nmi`、`nmi_exiting`（仅 `native-bp`；关闭时为 0）；
   - primary：`use_msr_bitmaps`、`activate_secondary_controls`；`rdtsc_exiting`、`use_tsc_offsetting`、`cr3_load_exiting` **显式 0**；
-  - secondary：`enable_ept`（`vmx-ept`）、`enable_rdtscp`、`enable_vpid`、`enable_invpcid`、`enable_xsaves`、`enable_user_wait_pause`、`conceal_vmx_from_pt`、`unrestricted_guest`；
+  - secondary：`enable_ept`（`vmx-ept`）、`enable_rdtscp`、`enable_vpid`/`unrestricted_guest`（仅 `vmx-ept`；no-EPT 为 0）、`enable_invpcid`、`enable_xsaves`、`enable_user_wait_pause`、`conceal_vmx_from_pt`；
   - exit：`save_debug_controls`、`host_address_space_size`、`save_ia32_pat`、`load_ia32_pat`、`conceal_vmx_from_pt`、`load_ia32_cet_state`（CET 支持时）；
   - entry：`ia32e_mode_guest`、`load_debug_controls`、`load_ia32_pat`、`conceal_vmx_from_pt`、`load_cet_state`（CET 支持时）；
   - exception bitmap：`#BP`、`#CP`（仅 `native-bp`；关闭时为 0）；
   - MSR bitmap：`IA32_FEATURE_CONTROL` 读、`0x480..=0x491` 读、MTRR 写（`vmx-ept`）、`IA32_S_CET`/`IA32_INTERRUPT_SSP_TABLE_ADDR` 写（CET）、APERF/MPERF 读写（`ENABLE_PERF` 且支持）；**不拦 `IA32_TSC`**；
   - 运行时按需置位：`monitor_trap_flag`（hide/MTF 单步）、`interrupt_window_exiting`/`nmi_window_exiting`（异常窗口）。
+- **MSR 探测语义**：
+  - `0x480..=0x491` 是只读的 VMX capability MSR；guest 读走 `emulate_rdmsr` 注入 `#GP(0)`，写不拦截，由硬件直接 `#GP`。
+  - `0x4000_0000..=0x4000_00FF` 没有体系结构 backing，`RDMSR`/`WRMSR` 都注入 `#GP(0)`；不要返回 0，否则与裸机不一致，也是可检测信号。
+  - `emulate_rdmsr` 顺序为 APERF/MPERF → CET → `IA32_FEATURE_CONTROL` → VMX capability → hypervisor MSR → safe fallback，并标记 `#[inline]`。
 - **INVPCID fast path**：`vmx/stub.S` 对 exit reason 58 直接读 instruction length、推进 RIP、用静态 `INVVPID` 描述符失效当前 VPID，然后 `vmresume`；不再进入 C 的 `skip_instruction`。它沿用 C 路径的简化类型映射和固定 `GUEST_VPID=1`，也不处理单步/中断 shadow。
 
 ### 9.2 EPT hook
@@ -387,6 +391,7 @@ Free → InFlight → Active → Closing → Retired → Free
 - 安装条件：`CPUID.06H:ECX[0]`（硬件协调反馈）为 1；MSR bitmap 同时拦截**读和写**（`setup_msr_bitmap` 调 `perf.init()`）；
 - `VirtualPerfCounters` **按需同步**（`vmx/state/perf.rs`）：
   - `ENABLE_PERF`（`state/mod.rs`）默认 **true**；`setup_msr_bitmap` 里 `perf.init()` 探支持并记首个基准；
+  - `ENABLE_PERF = false` 时不调用 `perf.init()`、不设置 APERF/MPERF 的 MSR bitmap：guest 直接读写物理计数器；用于减少退出/测速时，要接受 guest 看到 root 时间和写入落到真实 MSR；
   - guest `RDMSR` 调 `perf.value(msr)` → 先 `sync()`：读硬件计数器，把「上次基准以来的增量」加进 guest 视图，再重记基准；增量不是常量，就是两个计数器各自的差值；
   - guest `WRMSR` **保留写入值**（`perf.set`），绝不写真实 MSR；
   - **退出路径不再碰它**：`dispatch_vm_exit` 里没有 `accumulate()`/`mark_entry()`，不读这两个 MSR 时零开销；

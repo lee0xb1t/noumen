@@ -60,14 +60,17 @@ impl VmxVcpu {
         let mut proc_based_ctrls2 = control::ProcBasedCtls2::default();
         proc_based_ctrls2.set_enable_ept(cfg!(feature = "vmx-ept"));
         proc_based_ctrls2.set_enable_rdtscp(true);
-        proc_based_ctrls2.set_enable_vpid(true);
+        // VPID and unrestricted guest are EPT-dependent VM-entry controls:
+        // setting either without EPT makes VMLAUNCH fail with "invalid control
+        // fields" (error 7).
+        proc_based_ctrls2.set_enable_vpid(cfg!(feature = "vmx-ept"));
         proc_based_ctrls2.set_enable_invpcid(true);
         proc_based_ctrls2.set_enable_xsaves(true);
         proc_based_ctrls2.set_enable_user_wait_pause(true);
         proc_based_ctrls2.set_conceal_vmx_from_pt(true);
         // CET 的硬件行为依赖 unrestricted guest（KVM 在
         // vmx_set_cpu_caps 里也是这个条件），跟着打开。
-        proc_based_ctrls2.set_unrestricted_guest(true);
+        proc_based_ctrls2.set_unrestricted_guest(cfg!(feature = "vmx-ept"));
         if let Err(e) = proc_based_ctrls2.write_adjust() {
             return Err(HvError::ProcbasedCtrls2Fail(e));
         }
@@ -83,8 +86,9 @@ impl VmxVcpu {
         }
 
         // 不拦 `mov cr3` 之后, CR3 写全靠 VPID 的标签语义; 没有它 INVVPID 也
-        // 成了空操作, guest 会命中废弃翻译.
-        if !readback.enable_vpid() {
+        // 成了空操作, guest 会命中废弃翻译. 只有 EPT 构建才要求 VPID;
+        // no-EPT 构建本来就把 VPID 关掉, readback=false 是预期结果.
+        if cfg!(feature = "vmx-ept") && !readback.enable_vpid() {
             klog!("VMX: enable_vpid was cleared by the CPU/outer VMM, refusing to continue");
             return Err(HvError::UnsupportedCpu);
         }

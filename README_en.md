@@ -31,7 +31,7 @@ The loader in this repository is a Windows kernel driver. It allocates nonpaged 
 Notes:
 
 - `mem` does not imply `vmx-ept` or `svm-npt`; add the backend feature explicitly with `--no-default-features`.
-- With a backend feature disabled, the core still compiles and related hook/mem hypercalls return `RAX = 3`.
+- With a backend feature disabled, the core still compiles and related hook/mem hypercalls return `RAX = 3`; VMX EPT hook/HideSelf are not compiled, and `enable_vpid`/`unrestricted_guest` are off.
 - `native-bp` depends on `vmx-ept` and is enabled by default. MEM_*/HideSelf-only builds can disable it; `#BP`/`#CP`/NMI are then not intercepted, native breakpoint and wait commands return `3`, and the associated TSC inflation disappears.
 - With both `serial-console` and `buffer-log` disabled, `klog!` still type-checks its arguments but produces no output.
 

@@ -12,8 +12,35 @@ use crate::arch::x86_64::vmx::{ept, instruction::Invept};
 
 use super::skip_instruction;
 
+#[inline]
 pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> EmulationResult<()> {
     let msr = context.ecx();
+
+    // APERF/MPERF 是物理计数器：返回只统计 guest 运行时间的视图（读时同步）。
+    // 放在最前面：这两个 MSR 是性能工具最常见的读，先避开后面的分支。
+    if msr == x86::msr::IA32_APERF || msr == x86::msr::IA32_MPERF {
+        let value = vcpu.backend.as_vmx_mut().perf.value(msr);
+
+        context.rax = value & 0xffff_ffff;
+        context.rdx = (value >> 32) & 0xffff_ffff;
+
+        return skip_instruction();
+    }
+
+    // CET MSR 没有 VMCS 字段时必须读硬件：CPU 自己会改它们（XRSTOR/SYSRET 会更新
+    // U_CET/PL3_SSP），缓存副本会过期，返回陈旧值会让 guest 拿到 SSP=0。
+    // 放在 IA32_FEATURE_CONTROL 之前：CET 读比特性控制 MSR 探测更常见。
+    if vcpu.backend.as_vmx().cached.cet_supported
+        && vcpu.backend.as_vmx().cet.get(msr).is_some()
+    {
+        let mut exception_info = HostExceptionInfo::new();
+        let value = safe_routine::rdmsr_safe(&mut exception_info, msr).unwrap_or(0);
+
+        context.rax = value & 0xffff_ffff;
+        context.rdx = (value >> 32) & 0xffff_ffff;
+
+        return skip_instruction();
+    }
 
     // `enable_vmx()` locked the hardware MSR and set VMXON-outside-SMX, so
     // reading it directly would advertise VT-x to the guest. Return the value
@@ -35,38 +62,14 @@ pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         return Err(EmulationError::gp(0));
     }
 
-    // Hypervisor-reserved MSRs (0x4000_0000..=0x4000_00ff) are not backed by
-    // any real MSR on this CPU, so never let the read reach the host: report
-    // them as zero. VMware's backdoor MSRs live in this range too (e.g.
-    // 0x4000_00f0), and probing them must not fault the guest.
+    // Hypervisor-reserved MSRs (0x4000_0000..=0x4000_00ff) have no architectural
+    // backing. Real CPUs raise #GP, and WRMSR already reaches the same #GP via
+    // `wrmsr_safe`. Returning zero here is a detection oracle: a probe can tell
+    // this is a hypervisor by the successful RDMSR (and by the RDMSR/WRMSR
+    // asymmetry). Fault like bare metal instead. If a specific VMware backdoor
+    // MSR must be emulated, handle that exact MSR explicitly.
     if is_hypervisor_msr(msr) {
-        context.rax = 0;
-        context.rdx = 0;
-        return skip_instruction();
-    }
-
-    // APERF/MPERF 是物理计数器：返回只统计 guest 运行时间的视图（读时同步）。
-    if msr == x86::msr::IA32_APERF || msr == x86::msr::IA32_MPERF {
-        let value = vcpu.backend.as_vmx_mut().perf.value(msr);
-
-        context.rax = value & 0xffff_ffff;
-        context.rdx = (value >> 32) & 0xffff_ffff;
-
-        return skip_instruction();
-    }
-
-    // CET MSR 没有 VMCS 字段时必须读硬件：CPU 自己会改它们（XRSTOR/SYSRET 会更新
-    // U_CET/PL3_SSP），缓存副本会过期，返回陈旧值会让 guest 拿到 SSP=0。
-    if vcpu.backend.as_vmx().cached.cet_supported
-        && vcpu.backend.as_vmx().cet.get(msr).is_some()
-    {
-        let mut exception_info = HostExceptionInfo::new();
-        let value = safe_routine::rdmsr_safe(&mut exception_info, msr).unwrap_or(0);
-
-        context.rax = value & 0xffff_ffff;
-        context.rdx = (value >> 32) & 0xffff_ffff;
-
-        return skip_instruction();
+        return Err(EmulationError::gp(0));
     }
 
     let mut exception_info = HostExceptionInfo::new();
@@ -133,6 +136,12 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
 
             return skip_instruction();
         }
+    }
+
+    // Mirror RDMSR: the hypervisor-reserved range has no real MSR, so fault
+    // instead of letting an outer hypervisor's implementation leak through.
+    if is_hypervisor_msr(msr) {
+        return Err(EmulationError::gp(0));
     }
 
     let mut exception_info = HostExceptionInfo::new();

@@ -84,7 +84,7 @@ extern "C" fn _start(args_ptr: *const kargs::KernelArgs, hypercall_key: u64) -> 
 
     klog_verbose!("host cr3={:#x}", hv::get_host_cr3());
 
-    klog!("Initialized successfully!\n");
+    klog!("Initialized successfully!");
 
     0
 }
