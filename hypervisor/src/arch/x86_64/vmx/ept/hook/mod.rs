@@ -1,3 +1,7 @@
+// Native-breakpoint support is retained in the source tree when the feature is
+// off (ABI and host tests); dead-code warnings are expected for that build.
+#![cfg_attr(not(feature = "native-bp"), allow(dead_code))]
+
 use core::borrow::Borrow;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

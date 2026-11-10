@@ -358,6 +358,7 @@ impl HookEntry {
 
     /// 让一次性断点失效（等待项被取消/owner 变化）：保留偏移，等目标下一次
     /// 命中时由 `handle_breakpoint` 在目标 CPU 上摘掉并单步放行。
+    #[allow(dead_code)] // 仅 native-bp 路径使用；关闭该 feature 时保留 ABI。
     pub fn invalidate_temp_breakpoint(&mut self) -> bool {
         if self.temp_offset == u16::MAX || self.temp_thread == 0 {
             return false;

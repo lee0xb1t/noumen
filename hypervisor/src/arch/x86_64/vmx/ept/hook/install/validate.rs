@@ -98,6 +98,11 @@ fn validate_kind(kind: HookKind) -> Result<(), HookError> {
         return Err(HookError::Unsupported);
     }
 
+    #[cfg(not(feature = "native-bp"))]
+    if kind == HookKind::UserBreakpoint {
+        return Err(HookError::Unsupported);
+    }
+
     Ok(())
 }
 

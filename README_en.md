@@ -24,6 +24,7 @@ The loader in this repository is a Windows kernel driver. It allocates nonpaged 
 | `buffer-log` | Yes | 512-entry log ring; loader-provided or allocated from the page pool |
 | `panic-detail` | Yes | Panic register snapshot, `KernelArgs`, and symbol backtrace |
 | `vmx-ept` | Yes | Intel backend, identity EPT, EPT hook/mem |
+| `native-bp` | Yes | VMX native breakpoints, #BP/#CP/NMI exits; depends on `vmx-ept` |
 | `svm-npt` | Yes | AMD identity NPT, NPF, NPT hook/mem |
 | `mem` | Yes | Generic `MEM_*` service, implemented per backend |
 
@@ -31,6 +32,7 @@ Notes:
 
 - `mem` does not imply `vmx-ept` or `svm-npt`; add the backend feature explicitly with `--no-default-features`.
 - With a backend feature disabled, the core still compiles and related hook/mem hypercalls return `RAX = 3`.
+- `native-bp` depends on `vmx-ept` and is enabled by default. MEM_*/HideSelf-only builds can disable it; `#BP`/`#CP`/NMI are then not intercepted, native breakpoint and wait commands return `3`, and the associated TSC inflation disappears.
 - With both `serial-console` and `buffer-log` disabled, `klog!` still type-checks its arguments but produces no output.
 
 When using `serial-console`, Windows owns COM1; the solution is to delete `C:\WINDOWS\System32\drivers\serial.sys`.
@@ -70,6 +72,12 @@ cargo build --release
 cargo build --no-default-features --features vmx-ept
 cargo build --no-default-features --features svm-npt
 cargo build --release --no-default-features
+```
+
+For MEM_*/HideSelf-only builds without native breakpoints:
+
+```powershell
+cargo build --release --no-default-features --features buffer-log,vmx-ept,mem
 ```
 
 The image is written to `hypervisor/target/x86_64-unknown-none/<profile>/noumen`. The toolchain is pinned by `rust-toolchain.toml`; update the `ld.lld.exe` path in `.cargo/config.toml` for other machines.

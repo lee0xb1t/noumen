@@ -77,14 +77,14 @@ pub(super) fn retired(context: &mut GuestContext) -> EmulationResult<()> {
     Ok(())
 }
 
-#[cfg(feature = "vmx-ept")]
+#[cfg(feature = "native-bp")]
 pub(super) fn commit(context: &mut GuestContext, _vcpu: &mut Vcpu) -> EmulationResult<()> {
     context.rax = ept_hook::commit_byte_patch(context.rdx) as u64;
 
     Ok(())
 }
 
-#[cfg(feature = "vmx-ept")]
+#[cfg(feature = "native-bp")]
 pub(super) fn oneshot(context: &mut GuestContext, _vcpu: &mut Vcpu) -> EmulationResult<()> {
     context.rax = ept_hook::set_one_shot(context.rdx, context.r8 != 0) as u64;
 

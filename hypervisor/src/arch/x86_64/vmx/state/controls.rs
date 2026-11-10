@@ -26,8 +26,8 @@ impl VmxVcpu {
 
     fn configure_execution_controls(&mut self) -> HvResult<()> {
         let mut pin_based_ctrls = vmcs::control::PinbasedCtls::default();
-        pin_based_ctrls.set_virtual_nmi(true);
-        pin_based_ctrls.set_nmi_exiting(true);
+        pin_based_ctrls.set_virtual_nmi(cfg!(feature = "native-bp"));
+        pin_based_ctrls.set_nmi_exiting(cfg!(feature = "native-bp"));
         if let Err(e) = pin_based_ctrls.write_adjust() {
             return Err(HvError::PinbasedCtrlsFail(e));
         }
@@ -204,12 +204,11 @@ impl VmxVcpu {
         // #BP 并单步执行原指令。guest 自己代码触发的 #BP 会原样注入回去。
         // #CP 也拦：注入前记录 guest CET 状态。
         let mut bits = 0u32;
-        #[cfg(feature = "vmx-ept")]
-        {
+        if cfg!(feature = "native-bp") {
             bits |= 1 << 3;
-        }
-        if self.cached.cet_supported {
-            bits |= 1 << 21;
+            if self.cached.cet_supported {
+                bits |= 1 << 21;
+            }
         }
         let exception_bitmap = control::ExceptionBitmap::from_raw(bits);
 

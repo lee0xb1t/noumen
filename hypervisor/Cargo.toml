@@ -13,6 +13,7 @@ default = [
     "panic-detail",
     "buffer-log",
     "vmx-ept",
+    "native-bp",
     "svm-npt",
     "mem",
 ]
@@ -38,6 +39,12 @@ panic-detail = []
 # the guest runs on the host page tables directly:
 #   cargo build --release --no-default-features --features panic-detail,vmx-ept
 vmx-ept = []
+# VMX native breakpoints: UserBreakpoint hooks, the #BP exception bitmap, NMI
+# exiting/window handling and the breakpoint wait hypercalls. It depends on
+# `vmx-ept`. Disable it for MEM_*/HideSelf-only builds to avoid #BP/#CP/NMI
+# exits entirely:
+#   cargo build --release --no-default-features --features buffer-log,vmx-ept,mem
+native-bp = ["vmx-ept"]
 # SVM nested paging (NPT). The SVM backend itself is always compiled; this
 # switch only enables the identity NPT, NPF handling, NPT hooks/mem and
 # HideSelf. Without it the SVM guest runs on the host page tables.

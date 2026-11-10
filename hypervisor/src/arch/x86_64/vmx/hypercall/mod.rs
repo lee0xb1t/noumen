@@ -12,7 +12,7 @@ mod diag;
 mod hook;
 #[cfg(all(feature = "mem", feature = "vmx-ept"))]
 mod mem;
-#[cfg(feature = "vmx-ept")]
+#[cfg(feature = "native-bp")]
 mod wait;
 
 #[allow(deprecated, unreachable_patterns)]
@@ -63,25 +63,25 @@ pub fn dispatch(
         Hypercall::ReadSelf => diag::read_self(context, vcpu, false),
         #[cfg(feature = "vmx-ept")]
         Hypercall::ReadSelfEpt => diag::read_self(context, vcpu, true),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointWaitList => wait::list(context, vcpu),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointWaitReply => wait::reply(context, vcpu),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointWaitTimeout => wait::timeout(context, vcpu),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointWaitSetReg => wait::set_reg(context, vcpu),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointWaitFilter => wait::filter(context, vcpu),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointWaitCancel => wait::cancel(context, vcpu),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointOneshot => hook::oneshot(context, vcpu),
         #[cfg(feature = "vmx-ept")]
         Hypercall::HookApply => hook::apply(context, vcpu),
         #[cfg(feature = "vmx-ept")]
         Hypercall::HookRetired => hook::retired(context),
-        #[cfg(feature = "vmx-ept")]
+        #[cfg(feature = "native-bp")]
         Hypercall::UserBreakpointCommit => hook::commit(context, vcpu),
         #[cfg(feature = "vmx-ept")]
         Hypercall::HookHit => hook::hit(context, vcpu),
@@ -142,6 +142,19 @@ pub fn dispatch(
         | Hypercall::MemScan
         | Hypercall::MemMap
         | Hypercall::MemStats => {
+            context.rax = 3;
+            Ok(())
+        }
+        // 有 VMX/EPT 但没编 `native-bp`：断点等待命令保留编号，返回不支持。
+        #[cfg(all(feature = "vmx-ept", not(feature = "native-bp")))]
+        Hypercall::UserBreakpointWaitList
+        | Hypercall::UserBreakpointWaitReply
+        | Hypercall::UserBreakpointWaitTimeout
+        | Hypercall::UserBreakpointWaitSetReg
+        | Hypercall::UserBreakpointWaitFilter
+        | Hypercall::UserBreakpointWaitCancel
+        | Hypercall::UserBreakpointOneshot
+        | Hypercall::UserBreakpointCommit => {
             context.rax = 3;
             Ok(())
         }

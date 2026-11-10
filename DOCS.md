@@ -80,12 +80,14 @@ python build.py --hypercall-key 0x2b3d   # nsvr 的默认 key（缺省 0x10F2C�
 | `buffer-log` | 是 | 512 条日志环（约 76 KiB）；loader 提供，或 `log_base == 0` 时从页池分配内部环 |
 | `panic-detail` | 是 | panic 寄存器快照、KernelArgs、符号回溯 |
 | `vmx-ept` | 是 | Intel 后端 + identity EPT + EPT hook/mem |
+| `native-bp` | 是 | VMX 原生断点、`#BP`/`#CP`/NMI 拦截；依赖 `vmx-ept` |
 | `svm-npt` | 是 | AMD 的 identity NPT、NPF、NPT hook/mem、HideSelf |
 | `mem` | 是 | `MEM_*` 通用内存服务；后端各自实现 |
 
 关键规则：
 
 - `mem` **不再隐含** `vmx-ept`。构建时若只要内存服务，必须显式同时给后端 feature。
+- **`native-bp` 依赖 `vmx-ept`，默认开启**：控制 VMX 原生断点（`UserBreakpoint`）、`#BP`/`#CP` 异常位图和 NMI exiting。关闭后不拦截 `#BP`/`#CP`/NMI，原生断点和等待命令返回 `3`，适合只用 `MEM_*`/HideSelf 的镜像；此时 EPT detour/HideSelf 仍可用。
 - `POOL_PAGES`：开启 `vmx-ept` 或 `svm-npt` 时为 8192（32 MiB），否则 2048；页池不够时 EPT/NPT 初始化会失败。
   页池预算（`MAX_CPUS == 32`，最坏情况=2 MiB 模式覆盖 64 GiB）：每 vCPU 约 79 页（1 PML4 + 1 PDPT + 64 个 PD 表 + 1 dummy + 12 页 VMXON/VMCS/MSR bitmap/hide/host），32 核约 2528 页；宿主页表 514 页，内部日志环 20 页，合计约 3062 页；hook 拆表页和 fake/trampoline 副本再预留 2048 页，峰值约 5110 页（20 MiB）。1 GiB 模式每 vCPU 约 3 页（1 PML4 + 1 PDPT + 1 dummy），混合 MTRR 段每段再加 1 张 PD 表。NPT 同样按 `min(2^MAXPHYADDR, 1 TiB)`（1 GiB 叶）或 64 GiB（2 MiB 叶）覆盖，每 vCPU 约 3–66 页。
 - **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。两个控制位读回不生效或加载时 CET 未打开时，C 路径的 `emulate_cpuid` 会屏蔽 CET；但 **VMX CPUID 裸透传不经过 C 路径**，当前 VMX guest 会看到未屏蔽的 leaf 7，可能在 CET 未虚拟化时启用 CET 并触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
@@ -280,7 +282,7 @@ RIP 推进只能有一个所有者：
 ### 命令族
 
 - `1..=4`：日志、ping、Stop；
-- `5..=7`、`9..=11`、`13..=22`、`0x100`：hook/EPT 原生断点/自省；SVM 没有 NPT 原生断点路径；
+- `5..=7`、`9..=11`、`13..=22`、`0x100`：hook/EPT 原生断点/自省；SVM 没有 NPT 原生断点路径；`13..=22` 中的用户断点等待命令需要 `native-bp`，关闭时返回 `3`；
 - `0x20..=0x24`：`MEM_*`；
 - `0x200..=0x206`：保留编号（选择性 TSC 已移除），VMX/SVM 都返回 `3`；
 - `0x30..=0x3a`：SVM 专属命令（VMX 返回 `3`）。
@@ -302,14 +304,15 @@ RIP 推进只能有一个所有者：
 - **skip_instruction 分层**：`advance_rip` 只推进 RIP；`finish_instruction` 只在 STI/MOV-SS shadow 非零时清 interruptibility，只有 TF=1 时才读 DEBUGCTL/pending #DB。
 - **CPUID 裸透传**：`vmx/stub.S` 在 `vm_exit` 入口只读 `VM_EXIT_REASON`；如果是 CPUID，就直接在 root 执行 `cpuid`，`RIP += 2`，然后 `vmresume`。**不走 C handler，不做 leaf 过滤**：leaf 1 的 ECX[5]/[31]、`0x40000000..0x40000010`、leaf 7 CET 都不再屏蔽；也不处理 TF/MTF/CS.L/带前缀 CPUID，也不清 STI/MOV-SS interruptibility。这是性能优先路径，代价是暴露 VMX/hypervisor 位、可能让 guest 在 CET 未虚拟化时看到 CET，并可能破坏单步/hide 状态。需要恢复语义时，在 stub 里加回过滤/回退，或把 fast path 限制到安全 leaf。
 - **当前开启的 VMX 控制位**（其余为 0；`write_adjust()` 可能清掉 CPU/外层 VMM 不支持的位）：
-  - pin-based：`virtual_nmi`、`nmi_exiting`；
+  - pin-based：`virtual_nmi`、`nmi_exiting`（仅 `native-bp`；关闭时为 0）；
   - primary：`use_msr_bitmaps`、`activate_secondary_controls`；`rdtsc_exiting`、`use_tsc_offsetting`、`cr3_load_exiting` **显式 0**；
   - secondary：`enable_ept`（`vmx-ept`）、`enable_rdtscp`、`enable_vpid`、`enable_invpcid`、`enable_xsaves`、`enable_user_wait_pause`、`conceal_vmx_from_pt`、`unrestricted_guest`；
   - exit：`save_debug_controls`、`host_address_space_size`、`save_ia32_pat`、`load_ia32_pat`、`conceal_vmx_from_pt`、`load_ia32_cet_state`（CET 支持时）；
   - entry：`ia32e_mode_guest`、`load_debug_controls`、`load_ia32_pat`、`conceal_vmx_from_pt`、`load_cet_state`（CET 支持时）；
-  - exception bitmap：`#BP`（`vmx-ept`）、`#CP`（CET 支持时）；
+  - exception bitmap：`#BP`、`#CP`（仅 `native-bp`；关闭时为 0）；
   - MSR bitmap：`IA32_FEATURE_CONTROL` 读、`0x480..=0x491` 读、MTRR 写（`vmx-ept`）、`IA32_S_CET`/`IA32_INTERRUPT_SSP_TABLE_ADDR` 写（CET）、APERF/MPERF 读写（`ENABLE_PERF` 且支持）；**不拦 `IA32_TSC`**；
   - 运行时按需置位：`monitor_trap_flag`（hide/MTF 单步）、`interrupt_window_exiting`/`nmi_window_exiting`（异常窗口）。
+- **INVPCID fast path**：`vmx/stub.S` 对 exit reason 58 直接读 instruction length、推进 RIP、用静态 `INVVPID` 描述符失效当前 VPID，然后 `vmresume`；不再进入 C 的 `skip_instruction`。它沿用 C 路径的简化类型映射和固定 `GUEST_VPID=1`，也不处理单步/中断 shadow。
 
 ### 9.2 EPT hook
 
@@ -631,6 +634,7 @@ python tests/test-mem-core.py
 限制：
 
 - 最多 32 个槽位；同页最多 8 个普通/EPT 原生断点；每页最多 1 个 detour/hide；
+- `UserBreakpoint`（kind 4）需要 `native-bp`；该 feature 关闭时安装返回 `Unsupported`，因为 `#BP` 位图不再设置；
 - 跨页 detour 占一个槽位、两个物理页；
 - EPT 原生断点只接受低半区 VA，命中要求 CPL3，否则退回普通 MTF；
 - 事件环 256 条，满了丢最旧；非 owner 核跳过的断点不产生事件。

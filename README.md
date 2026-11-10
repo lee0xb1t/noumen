@@ -24,6 +24,7 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 | `buffer-log` | 是 | 512 条日志环；loader 提供，或从页池分配内部环 |
 | `panic-detail` | 是 | panic 寄存器快照、KernelArgs、符号回溯 |
 | `vmx-ept` | 是 | Intel 后端、identity EPT、EPT hook/mem |
+| `native-bp` | 是 | VMX 原生断点、#BP/#CP/NMI 拦截；依赖 `vmx-ept` |
 | `svm-npt` | 是 | AMD identity NPT、NPF、NPT hook/mem |
 | `mem` | 是 | 通用 `MEM_*` 服务，后端各自实现 |
 
@@ -31,6 +32,7 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 
 - `mem` 不隐含 `vmx-ept`/`svm-npt`；使用 `--no-default-features` 时要显式加后端 feature。
 - 关闭 `vmx-ept`/`svm-npt` 时核心仍可编译，相关 hook/mem hypercall 返回 `RAX = 3`。
+- `native-bp` 依赖 `vmx-ept`；默认开启。只使用 `MEM_*`/HideSelf 时可关闭它，此时不拦截 `#BP`/`#CP`/NMI，原生断点和等待命令返回 `3`，避免这些退出带来的 TSC 膨胀。
 - 同时关闭 `serial-console` 和 `buffer-log` 时，`klog!` 仍参与类型检查，但不输出。
 
 使用 `serial-console` 时，Windows 会占用 COM1，解决办法是删除 `C:\WINDOWS\System32\drivers\serial.sys`。
@@ -70,6 +72,12 @@ cargo build --release
 cargo build --no-default-features --features vmx-ept
 cargo build --no-default-features --features svm-npt
 cargo build --release --no-default-features
+```
+
+只使用 `MEM_*`/HideSelf、不需要原生断点时：
+
+```powershell
+cargo build --release --no-default-features --features buffer-log,vmx-ept,mem
 ```
 
 产物在 `hypervisor/target/x86_64-unknown-none/<profile>/noumen`。工具链已由 `rust-toolchain.toml` 固定；`.cargo/config.toml` 中的 `ld.lld.exe` 路径需按机器修改。
