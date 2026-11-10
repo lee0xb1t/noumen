@@ -261,12 +261,12 @@ typedef struct _NOUMEN_START_HYPERVISOR
 它逐个把已经虚拟化的 CPU 绑核、发 `VMCALL(STOP)`。hypervisor 在那个核上：
 
 1. 把 guest 的 RIP/RSP/RFLAGS/CR3 从 VMCS 取出来（`VMXOFF` 之后就再也读不到了）；
-2. 把 root 里换掉的 PAT 写回硬件，`TSC offset` 归零；
-3. `VMXOFF`，切回 guest 的 CR3，恢复 GPR/XMM/DR/CR2/CR8，直接在 root 里跳回 VMCALL 的下一条指令。
+2. 把 root 里换掉的 PAT 写回硬件；
+3. `VMXOFF`，切回 guest 的 CR3，恢复 GPR/DR0–3/CR2/CR8，直接在 root 里跳回 VMCALL 的下一条指令。
 
 所有核停完之后状态回到 `Unloaded`，镜像留在内存里等驱动卸载时释放。**再次 Start 需要重新加载驱动**：每核的初始化状态（`GlobalVcpu.initialized`）不可重用，`_init` 会直接拒绝。
 
-停之前驱动会先停掉日志线程 —— 它每秒对“当前 CPU”发一次 VMCALL ping，而核退出 VMX 之后 VMCALL 会变成 `#UD`，所以顺序不能反。
+停之前驱动会先关闭日志线程的 ping —— 它每秒对“当前 CPU”发一次 VMCALL，而核退出 VMX 之后 VMCALL 会变成 `#UD`；停止循环结束后再停线程。
 
 停止过程不做 `VMCLEAR`：`VMXOFF` 本身就离开 VMX operation，VMCS/VMXON 区域随镜像一起释放。
 

@@ -1,6 +1,7 @@
-# AGENTS.md
+# DOCS.md
 
-本文件是 noumen 的**当前实现说明**，也是新 agent 的入口。  
+本文件是 noumen 的**当前实现说明**，也是新维护者的入口。
+
 先读本文件，再读 [README.md](README.md)。
 
 ## 1. 项目是什么
@@ -22,10 +23,12 @@ noumen 是一个运行在 x86_64 上的 Type-1 风格 hypervisor：
 4. **不要把 `#[cfg(test)]` 当成消 dead_code 警告的工具**。生产 API 即使当前只有测试调用，也必须保留在非 test 构建中。
 5. **不要修改 guest 真实物理页来做 hook**。所有代码 hook 都走 EPT/NPT 私有副本。
 6. **任何 hook 路径都必须能在 `STOP`/devirt 前恢复**；否则 guest 会带着 `0xCC` 或 detour 字节继续运行。
-7. **每个 crate 就地构建**：产物落在自己的 `target/`（`hypervisor/`、`um/uapp/`、`um/nsvr/`、`tools/rdtsc_probe/`）。仓库根 `target/` **只放暂存产物** `deviceio/`、`kdmapper/`；编译器临时目录走系统 temp（`%TEMP%/noumen-build`）。不要用 `.cargo-target`，也不要把 target 指到别的 crate。
+7. **每个 crate 就地构建**：产物落在自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`tools/rdtsc_probe/`）。仓库根 `target/` **只放暂存产物** `deviceio/`、`kdmapper/`；编译器临时目录走系统 temp（`%TEMP%/noumen-build`）。不要用 `.cargo-target`，也不要把 target 指到别的 crate。
 8. **默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种配置都必须 0 warning 通过**。
 
 ## 3. 快速开始
+
+以下命令在 `hypervisor/` 下执行：
 
 ```powershell
 # 默认：logbuffer + panic 明细 + VMX EPT + SVM NPT + mem
@@ -523,11 +526,13 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 1. **工具链已固定**：`hypervisor/rust-toolchain.toml` 指定 `nightly-x86_64-pc-windows-msvc` + `rust-src`；在 `hypervisor/` 下直接 `cargo build` 即可，不要依赖 rustup 的 `nightly` 别名（本机该别名可能指向 GNU，导致 `rust-src` 缺失或 `#![feature]` 被 stable 拒绝）。
 2. **`rust-lld` 缺失**：当前 nightly 不自带 `rust-lld`，`.cargo/config.toml` 使用绝对路径 `C:\Program Files\LLVM\bin\ld.lld.exe`。换机器要改路径。
 3. **clang 临时目录**：`build.rs` 把 `TMP/TEMP` 指到 `OUT_DIR/cc-tmp`；否则某些 Windows ACL 配置下 clang 会失败。
-4. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`um/uapp/`、`um/nsvr/`、`tools/rdtsc_probe/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
+4. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`tools/rdtsc_probe/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
 5. **SVM 宿主测试的 cargo 配置**：`tests/test-svm-core.py` 默认在仓库外临时目录编译；不要把测试 crate 放到仓库 `target/` 下，否则会继承 `.cargo/config.toml` 的 `x86_64-unknown-none` + `build-std`，出现 `panic_handler` 缺失等假错误。
 6. **feature 组合**：每次改 `cfg` 后至少跑默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种构建。
 
 ## 15. 测试
+
+以下命令在 `hypervisor/` 下执行：
 
 ```powershell
 # EPT hook 纯逻辑
@@ -540,7 +545,7 @@ python tests/test-svm-core.py
 python tests/test-mem-core.py
 ```
 
-测试脚本在 `tests/`；`tests/svm-core-tests` 是独立的宿主 harness crate，不能直接对主 crate 执行 `cargo test`。
+测试脚本在 `hypervisor/tests/`；`tests/svm-core-tests` 是独立的宿主 harness crate，不能直接对主 crate 执行 `cargo test`。
 
 测试边界：
 
@@ -576,7 +581,7 @@ python tests/test-mem-core.py
 
 - `README.md`：中文项目概览、feature、构建、日志；
 - `README_en.md`：英文项目概览；
-- `AGENTS.md`：架构、ABI、全部坑、EPT/SVM/mem 细节。
+- `DOCS.md`：架构、ABI、全部坑、EPT/SVM/mem 细节。
 
 `docs/` 已移除，内容已合并到本文件。`tests/` 保留宿主测试脚本和 SVM harness；不要重新引入外部项目分析、旧移植计划或驱动/调用方专项文档。
 
