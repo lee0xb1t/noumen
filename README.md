@@ -117,7 +117,6 @@ RAX = 返回值
 
 - [DOCS.md](DOCS.md)：架构、ABI、全部实现细节和坑；
 - [README_en.md](README_en.md)：英文概览；
-- 研究笔记和 SDM 已移至 `C:\learn\my_learning\hypervisor\`（`research/`、`books/`），不属于本仓库产品文档。
 
 ## 已知限制
 

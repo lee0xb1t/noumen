@@ -117,7 +117,6 @@ Command families:
 
 - [DOCS.md](DOCS.md): architecture, ABI, implementation details, and pitfalls;
 - [README.md](README.md): Chinese overview;
-- Research notes and the SDM were moved to `C:\learn\my_learning\hypervisor\` (`research/`, `books/`) and are not part of this repository's product documentation.
 
 ## Known limitations
 
