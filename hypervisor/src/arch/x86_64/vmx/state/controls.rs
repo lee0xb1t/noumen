@@ -9,50 +9,8 @@ use crate::{
 };
 
 use super::{CetMsrs, VmxVcpu};
-use crate::arch::x86_64::vmx::state::selective_tsc;
 
 impl VmxVcpu {
-    /// 把本核的 `rdtsc_exiting` 同步到最新的 TSC 隐藏配置。
-    ///
-    /// `RDTSC_EXITING` 是**整个 VM** 的控制位，没法只对某个进程打开；所以只要
-    /// 存在隐藏目标就全系统拦 `RDTSC`，退出处理里再按进程/模块决定要不要扣
-    /// host 时间。没有任何目标时立刻关掉，避免给所有 `RDTSC` 加一次 VM-exit。
-    ///
-    /// `cpu_id` 必须由调用方传：`VmxVcpu::vpid` 在所有核上都是 `GUEST_VPID`（=1），
-    /// 拿它打日志会显得「只有一个核在同步」。
-    pub(crate) fn sync_tsc_hiding(&mut self, cpu_id: u32) {
-        use crate::arch::x86_64::vmx::state::selective_tsc;
-
-        let generation = selective_tsc::generation();
-
-        if self.selective_tsc.applied_generation == generation {
-            return;
-        }
-
-        let wanted = selective_tsc::hiding_active();
-        let Ok(mut ctrls) = control::ProcBasedCtls::read() else {
-            return;
-        };
-
-        if ctrls.rdtsc_exiting() != wanted {
-            ctrls.set_rdtsc_exiting(wanted);
-
-            if ctrls.write_adjust().is_err() {
-                return;
-            }
-        }
-
-        self.selective_tsc.applied_generation = generation;
-
-        if wanted {
-            crate::klog!("TSC: rdtsc_exiting on, cpu#{}", cpu_id);
-        } else {
-            // 关掉隐藏时清账本，下次打开不会带上一段陈旧的 host 时间。
-            self.selective_tsc.reset();
-            crate::klog!("TSC: rdtsc_exiting off, cpu#{}", cpu_id);
-        }
-    }
-
     pub(super) fn setup_vmcs(&mut self) -> HvResult<()> {
         self.configure_execution_controls()?;
         self.configure_exit_controls()?;
@@ -82,14 +40,21 @@ impl VmxVcpu {
         // INVVPID, 否则 guest 会继续用已失效的翻译.
         proc_based_ctrls.set_cr3_load_exiting(false);
         proc_based_ctrls.set_use_msr_bitmaps(true);
-        // 硬件 TSC offsetting 禁用：per-vCPU offset 在多核环境下无法保证全局时钟一致性。
-        // 12 个核各自扣减各自的 host 时间，导致时钟差异累积，最终违反 Windows
-        // HAL 定时器的跨核计算，导致 0x5C BSOD。
-        // 改为让 guest TSC = 物理 TSC，保持所有核一致。
+        // TSC 物理透传：per-vCPU offset 会导致多核时钟漂移（Windows HAL 0x5C），不使用。
         proc_based_ctrls.set_use_tsc_offsetting(false);
+        // RDTSC/RDTSCP 不虚拟化；MSR bitmap 不拦 IA32_TSC。
+        proc_based_ctrls.set_rdtsc_exiting(false);
         proc_based_ctrls.set_activate_secondary_controls(true);
         if let Err(e) = proc_based_ctrls.write_adjust() {
             return Err(HvError::ProcbasedCtrlsFail(e));
+        }
+
+        // 读回确认 RDTSC exiting 没有被 CPU/外层 VMM 强制打开。
+        let proc_readback =
+            control::ProcBasedCtls::read().map_err(HvError::ProcbasedCtrlsFail)?;
+        klog_verbose!("VMX: proc_ctls={:#x}", proc_readback.as_raw());
+        if proc_readback.rdtsc_exiting() {
+            klog!("VMX: rdtsc_exiting is forced on by CPU/outer VMM; RDTSC will VM-exit");
         }
 
         let mut proc_based_ctrls2 = control::ProcBasedCtls2::default();
@@ -124,8 +89,7 @@ impl VmxVcpu {
             return Err(HvError::UnsupportedCpu);
         }
 
-        // TSC offsetting 已禁用（导致多核不一致）。
-        // 如需隐藏 TSC，使用 selective_tsc 模块通过 RDTSC 拦截选择性隐藏特定进程。
+        // TSC 无虚拟化：guest 直接读物理 TSC。
 
         Ok(())
     }
@@ -337,28 +301,10 @@ impl VmxVcpu {
             return Err(HvError::VmexitMsrLoadCtrlFail(e));
         }
 
-        // VM-exit MSR-store：让硬件在**退出转换过程中**把 `IA32_TSC` 记进本核的
-        // 采样区，作为 TSC 隐藏账本的「退出时刻」。硬件写 vs handler 里 `rdtsc`
-        // 差着 handler 序言那几百 tick，而这个差值会被原样算进 host 时间。
-        //
-        // 无条件配置（不跟随隐藏开关）：控制位只影响退出时的 16 字节写入，代价
-        // 可以忽略；好处是运行时用 hypercall 开关隐藏时不用再动 VMCS 控制位。
-        self.msr_store.init();
-
-        let mut vmexit_msr_store = control::VmexitMsrStore::default();
-        vmexit_msr_store.set_count(selective_tsc::MSR_STORE_ENTRIES);
-        vmexit_msr_store.set_address(self.msr_store.phys().as_u64());
-
+        // VM-exit MSR-store 不配置：count/address 写 0，避免继承 VMCS 的旧值。
+        let vmexit_msr_store = control::VmexitMsrStore::default();
         if let Err(e) = vmexit_msr_store.write() {
             return Err(HvError::VmexitMsrStoreCtrlFail(e));
-        }
-
-        // 读回确认硬件真的接受了这些记录；被清掉时回退到 handler 里 `rdtsc`。
-        if control::VmexitMsrStore::read_count().unwrap_or(0) == selective_tsc::MSR_STORE_ENTRIES
-        {
-            self.selective_tsc.enable_msr_store();
-        } else {
-            klog!("TSC: VM-exit MSR-store was cleared, exit timestamp from RDTSC");
         }
 
         let vmentry_msr_load = control::VmentryMsrLoad::default();

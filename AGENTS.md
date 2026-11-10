@@ -85,7 +85,7 @@ python build.py --hypercall-key 0x2b3d   # nsvr 的默认 key（缺省 0x10F2C�
 - `mem` **不再隐含** `vmx-ept`。构建时若只要内存服务，必须显式同时给后端 feature。
 - `POOL_PAGES`：开启 `vmx-ept` 或 `svm-npt` 时为 8192（32 MiB），否则 2048；页池不够时 EPT/NPT 初始化会失败。
   页池预算（`MAX_CPUS == 32`，最坏情况=2 MiB 模式覆盖 64 GiB）：每 vCPU 约 79 页（1 PML4 + 1 PDPT + 64 个 PD 表 + 1 dummy + 12 页 VMXON/VMCS/MSR bitmap/hide/host），32 核约 2528 页；宿主页表 514 页，内部日志环 20 页，合计约 3062 页；hook 拆表页和 fake/trampoline 副本再预留 2048 页，峰值约 5110 页（20 MiB）。1 GiB 模式每 vCPU 约 3 页（1 PML4 + 1 PDPT + 1 dummy），混合 MTRR 段每段再加 1 张 PD 表。NPT 同样按 `min(2^MAXPHYADDR, 1 TiB)`（1 GiB 叶）或 64 GiB（2 MiB 叶）覆盖，每 vCPU 约 3–66 页。
-- **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。两个控制位读回不生效或加载时 CET 未打开时，`emulate_cpuid` 会屏蔽 CET。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
+- **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。两个控制位读回不生效或加载时 CET 未打开时，C 路径的 `emulate_cpuid` 会屏蔽 CET；但 **VMX CPUID 裸透传不经过 C 路径**，当前 VMX guest 会看到未屏蔽的 leaf 7，可能在 CET 未虚拟化时启用 CET 并触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
 - `vmx-ept` 关闭时，VMX 仍可编译（guest 直接跑宿主页表），但 EPT hook/mem 代码不编译；相关 hypercall 返回 `RAX = 3`。
 - `svm-npt` 关闭时：SVM 核心仍编译（VMCB、VMRUN、CPUID/MSR、异常、devirt、ping/log/Stop），只关闭 `svm/npt`、NPF、NPT hook/mem、HideSelf 和 `NP_ENABLE`；guest 运行在宿主页表上，NPT 相关 hypercall 返回 `3`。共享 `Hypercall` enum 仍保留 `0x30..0x3a` 编号（ABI 不变）。`tests/svm-core-tests` 仍会把纯 SVM 模块按路径编进宿主测试，和主二进制的 feature 无关。
 - `buffer-log` 关闭时，`klog!` 的调用点仍在（参数参与类型检查），但不会写日志。
@@ -113,7 +113,7 @@ Windows driver
 - 首字段 `version` 必须是 `4`；
 - 只包含内存层字段 + 一张 Windows 结构偏移表，不含 OS/进程/模块/PE 语义；
 - 关键字段：`system_cr3`、`system_cr3_virt`、`kernel_base`、`sym_base`、`str_base`、`log_base`、`kernel_pfn_base/count`、`phys_map_base/count`；
-- **v4 新增 `win_offsets`**（`WinOffsets`，56 字节）：`build` + `_EPROCESS`/`_KTHREAD` 字段偏移，由 uapp 按 build 号选表后经驱动 `SetWinOffsets`(15) 下发，`Start` 时合并进来。`build == 0` 表示没提供，**CPL3 的 PID 匹配会全部失效**（那是唯一来源，已经没有 TEB 退路，见 §9.8 匹配规则）。`kthread_process` 是 **KTHREAD 相对**偏移；表由仓库根 `tools/gen_win_offsets.py` 生成（memflow 的 offsets/*.toml + ntoskrnl.exe 导出反汇编）；
+- **v4 新增 `win_offsets`**（`WinOffsets`，56 字节）：`build` + `_EPROCESS`/`_KTHREAD` 字段偏移，由 uapp 按 build 号选表后经驱动 `SetWinOffsets`(15) 下发，`Start` 时合并进来。选择性 TSC 隐藏移除后，hypervisor **当前没有消费者**；字段保留是为了不破坏 `KernelArgs v4` 的 ABI，后续进程/模块自省可以复用。`kthread_process` 是 **KTHREAD 相对**偏移；表由仓库根 `tools/gen_win_offsets.py` 生成（memflow 的 offsets/*.toml + ntoskrnl.exe 导出反汇编）；
 - 读 packed 字段时先拷到局部变量，避免未对齐引用；
 - `validate()` 在日志初始化前运行，不能访问 guest 内存。
 
@@ -279,7 +279,7 @@ RIP 推进只能有一个所有者：
 - `1..=4`：日志、ping、Stop；
 - `5..=7`、`9..=11`、`13..=22`、`0x100`：hook/EPT 原生断点/自省；SVM 没有 NPT 原生断点路径；
 - `0x20..=0x24`：`MEM_*`；
-- `0x200..=0x206`：TSC 选择性隐藏（`TscSetTargetPid` / `TscSetTargetName` / `TscSetTargetModule` / `TscSetWinOffsets` / `TscSetExitOverhead` / `TscSetDivisor` / `TscSetHitLog`，见 §9.8）；
+- `0x200..=0x206`：保留编号（选择性 TSC 已移除），VMX/SVM 都返回 `3`；
 - `0x30..=0x3a`：SVM 专属命令（VMX 返回 `3`）。
 
 ## 9. VMX 关键点与坑
@@ -292,6 +292,19 @@ RIP 推进只能有一个所有者：
 - **读写 CR0/CR4 只能用 `cr::Cr0`/`cr::Cr4` 的裸 `mov` 实现**：`x86::controlregs::cr4()` 内部是 `from_bits_truncate`，会把 flags 里没定义的位（典型是 CET bit23）静默清掉；`enable_vmx()` 再把它写回，就真的把 CET 关掉了（表现为 loader 里 `__readcr4()` 是 `0xb50ef8`，noumen 里读到的却是 `0x350ef8`）。
 - `CR3` 不拦截，靠 VPID 区分地址空间；hook 页的 EPT 状态变化必须对当前核做 `INVEPT`/TLB 失效。
 - **CR0/CR4 guest/host mask 里为 1 的位是 host-owned**（KVM 里 `CR4_GUEST_HOST_MASK = ~cr4_guest_owned_bits`，VM entry 时这些位取 HOST_CRx 的值，guest 写它们只改 read shadow）。**不要用全 1 掩码**：那会把 guest 的真实 CR4 永远钉在 HOST_CR4 上，CET/SMEP/SMAP/PCIDE 全都改不了，guest 执行 CET 指令直接 `#UD`，表现为线程启动 `STATUS_ILLEGAL_INSTRUCTION` → `0xEF`。debug 和 release 都必须用 `vmx_crX_fixed0 | !vmx_crX_fixed1`（CR0 另加 CD/WP）。CR4 read shadow 里清掉 VMXE，HOST_CR4 仍保留 VMXE 供 root 执行 VMX 指令。
+- **exit stub 不保存 XMM**：`vmx/stub.S` 和 `svm/stub.S` 不再 `movaps` 保存/恢复 XMM0–15；`GuestContext` 仍保留 XMM 区域（0xC0–0x1BF）但内容未定义。root（Rust + `compiler_builtins`）**必须保持不使用 SSE/XMM**；当前 debug/release 反汇编在 stub 之外是 **0 条 XMM 指令**。以后引入浮点、SIMD 或 SSE `memcpy` 时，必须恢复 XMM 保存，或在构建时显式禁用 SSE 并重新验证反汇编。
+- **DR 隔离**：VMX 慢路径保存 guest DR0–3 后将其清零，C 运行期间不可见；`vmresume` 前从 `GuestContext` 恢复。DR6 不存 `GuestContext`，硬件保留 guest 值。
+- **vm_stop 前必须恢复全部 guest GPR**：`vm_stop` 只处理 RAX/RDX/RBP 的 iretq 帧；不要在恢复 RCX/RBX/…/R14 之前跳到 `vm_stop`。
+- **CPUID 裸透传**：`vmx/stub.S` 在 `vm_exit` 入口只读 `VM_EXIT_REASON`；如果是 CPUID，就直接在 root 执行 `cpuid`，`RIP += 2`，然后 `vmresume`。**不走 C handler，不做 leaf 过滤**：leaf 1 的 ECX[5]/[31]、`0x40000000..0x40000010`、leaf 7 CET 都不再屏蔽；也不处理 TF/MTF/CS.L/带前缀 CPUID，也不清 STI/MOV-SS interruptibility。这是性能优先路径，代价是暴露 VMX/hypervisor 位、可能让 guest 在 CET 未虚拟化时看到 CET，并可能破坏单步/hide 状态。需要恢复语义时，在 stub 里加回过滤/回退，或把 fast path 限制到安全 leaf。
+- **当前开启的 VMX 控制位**（其余为 0；`write_adjust()` 可能清掉 CPU/外层 VMM 不支持的位）：
+  - pin-based：`virtual_nmi`、`nmi_exiting`；
+  - primary：`use_msr_bitmaps`、`activate_secondary_controls`；`rdtsc_exiting`、`use_tsc_offsetting`、`cr3_load_exiting` **显式 0**；
+  - secondary：`enable_ept`（`vmx-ept`）、`enable_rdtscp`、`enable_vpid`、`enable_invpcid`、`enable_xsaves`、`enable_user_wait_pause`、`conceal_vmx_from_pt`、`unrestricted_guest`；
+  - exit：`save_debug_controls`、`host_address_space_size`、`save_ia32_pat`、`load_ia32_pat`、`conceal_vmx_from_pt`、`load_ia32_cet_state`（CET 支持时）；
+  - entry：`ia32e_mode_guest`、`load_debug_controls`、`load_ia32_pat`、`conceal_vmx_from_pt`、`load_cet_state`（CET 支持时）；
+  - exception bitmap：`#BP`（`vmx-ept`）、`#CP`（CET 支持时）；
+  - MSR bitmap：`IA32_FEATURE_CONTROL` 读、`0x480..=0x491` 读、MTRR 写（`vmx-ept`）、`IA32_S_CET`/`IA32_INTERRUPT_SSP_TABLE_ADDR` 写（CET）、APERF/MPERF 读写（`ENABLE_PERF` 且支持）；**不拦 `IA32_TSC`**；
+  - 运行时按需置位：`monitor_trap_flag`（hide/MTF 单步）、`interrupt_window_exiting`/`nmi_window_exiting`（异常窗口）。
 
 ### 9.2 EPT hook
 
@@ -345,6 +358,7 @@ Free → InFlight → Active → Closing → Retired → Free
 
 ### 9.6 CET（影子栈）
 
+- **注意：当前 VMX CPUID 裸透传不经过 `emulate_cpuid`，下面对 leaf 7 的 CET 屏蔽只在 C 路径生效。** 如果 CET 未虚拟化，guest 读到 CET 支持后可能启用，导致 `#CP`/`0xEF`；需要保留屏蔽时，必须让 leaf 7 回到 C 路径或在 stub 里单独过滤。
 - VMX 不自动保存 XCR0/CET。不开 "load CET state"/"load IA32_CET state" 时，VM exit 不保存 guest 的 `SSP`/`IA32_S_CET`，用户态 `ret` 会在影子栈上失配 → `#CP` → Windows 转成 `FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS`（`0xC0000409`）；critical process 因此退出 → `0xEF`；
 - 控制位：VM-entry bit 20 `load_cet_state`、VM-exit bit 28 `load_ia32_cet_state`；字段：guest `S_CET`/`SSP`/`INTR_SSP_TABLE` = `0x6828/0x682a/0x682c`，host 对应 `0x6c18/0x6c1a/0x6c1c`（`x86` crate 没有这些常量，定义在 `vmcs/guest.rs`、`vmcs/host.rs`）；
 - root 侧必须关闭 supervisor 影子栈：`HOST_S_CET = HOST_SSP = HOST_INTR_SSP_TABLE = 0`。否则 noumen 在 root 里的 `call`/`ret` 会消费 guest 的影子栈；
@@ -371,71 +385,19 @@ Free → InFlight → Active → Closing → Retired → Free
 - 代价：guest 每读一次这两个 MSR 产生一个 VM exit（只有这时才 `rdmsr`）；不支持该特性的 CPU 上整套逻辑不安装；
 - 两次同步之间的 root 时间会算进增量（每次读最多多算一个 handler 的时长，之后不累积）；这是时间切片模拟，不等同硬件虚拟计数器。
 
-### 9.8 TSC（选择性隐藏，`vmx/state/selective_tsc.rs`）
+### 9.8 TSC
 
-- **全系统 TSC 虚拟化已经移除**：`use_tsc_offsetting` + per-vCPU `TSC_OFFSET` 扣减、`VirtualTsc`、`IA32_TSC` 的 RDMSR/WRMSR 拦截都不再存在（**MSR-store 保留**，但只用来取退出时刻，见下）。原因见下一条；
-- **为什么不能用 `TSC_OFFSET`**：它是 **per-vCPU** 的。12 个核各自扣减自己那段 host 时间，累积后同一物理时刻不同核读到的 TSC 能差几十毫秒；Windows 的 HAL 定时器跨核比较时直接 **`0x5C HAL_INITIALIZATION_FAILED`**（`Arg1=0x113`, `Arg2=0x27`，栈是 `HalpTimerDpcRoutine`）。想让 offset 全局一致必须 IPI 同步所有核的 VMCS，成本与竞态都不划算；
-- **现在的做法：只对目标进程/模块隐藏**。`RDTSC_EXITING` 是 VM 级控制位、没法按进程开，所以只要存在隐藏目标就全系统拦 `RDTSC`，**在退出处理里再决定要不要扣**：
-  - 每个 vCPU 只记**退出基准**（`last_exit_tsc` / `last_thread`，用于日志诊断），**虚拟时钟是全局唯一的**：`CLOCK_PHYS`/`CLOCK_VISIBLE` 两个原子量 + 一把短自旋锁（`CLOCK_LOCK`，root 里不能拿阻塞锁）。早先按线程键（KTHREAD/TEB）分槽，真机踩了两个坑：① 键不稳定（同一个进程先后出现 `0xac256ab000` / `0xac256ad000` 两个 "TEB"）；② 键一变就落到新槽、`last_phys` 归零，这一次直接返回物理值、下一次又回到慢速曲线，两个尺度相差「运行时长 × 90%」，样本于是出现 ±1e9 的正负跳变。现在只有一个目标、一条曲线：多线程共用同一个虚拟时钟，推进量只取两次命中之间的物理流逝，与哪个线程读的无关；换目标时 `reset_ledgers()` 整体清零；
-  - **目标判定每次退出只算一次**：`dispatch_vm_exit` 调 `tsc::match_target()`，结果 `set_match()` 进 vCPU，`emulate_rdtsc`/`emulate_rdtscp` 只 `current_match()` 复用。早先两处各算一次，于是同一次退出既把 guest 页表走两遍（KPCR→KTHREAD→EPROCESS 三跳，每跳一次软件页表翻译）；
-  - **退出时刻用硬件 VM-exit MSR-store**（`VMEXIT_MSR_STORE_COUNT = MSR_STORE_ENTRIES = 2`，`ADDR` 指向 `VmxVcpu::msr_store` 这一页）：**两条记录**——① `IA32_TSC`，硬件在退出转换过程中就写好了，比 handler 里再 `rdtsc` 早一个 handler 序言（几百 tick）；② `IA32_KERNEL_GS_BASE`，给 CPL3 的 PID 匹配当 KPCR 用（见下）。读回 `read_count() != 2`（有的嵌套 VMM 会清掉）时退回 handler 里的 `rdtsc`/`rdmsr`，日志打 `TSC: VM-exit MSR-store was cleared`；
-  - **`IA32_KERNEL_GS_BASE` 不属于 VMCS 的 guest/host 状态**：VM 进出不会自动换它，只有显式 MSR-load 列表才会动。本 hypervisor 没有为它配 load 列表，root 里也从不 `wrmsr`/`swapgs`，所以 guest 的 `swapgs` 改的就是真实寄存器 —— 在 root 里 `rdmsr(0xC0000102)` 读到的**就是 guest 的值**（CPL3 时是 KPCR，CPL0 时是该线程的用户 TEB）。为了不依赖这个隐含约定，退出时让硬件把它的快照存进 MSR-store 区域，`kernel_gs_base()` 优先用快照、读不到才回退 `rdmsr`；
-
-  - **只累加目标相关的窗口**：`matched` 由 `tsc::match_target()` 在同一个退出里判定，假就只更新基准、不累加。否则账本会把本核**所有** host 时间都扣掉——实测目标进程的时钟只到墙钟的 0.4%，超时/定时器全部失真；
-  - 记账顺序是「先 `note_exit` 再处理退出」，因此 `hide()` 用的是**本次退出转换之前**就已完成的窗口，`RDTSC` 自身 handler 的时间不会被算进读数值；两次 `RDTSC` 之间夹着的其他退出（中断、别的进程的系统调用）只有 `matched` 时才会被扣掉；
-  - **但账本漏掉「guest→root 转换」本身**：`exit_tsc` 是转换完成时硬件写的，从最后一条 guest 指令到那一刻的耗时 root 侧读不到。推导一下 `rdtsc; cpuid; rdtsc` 的差值：两次读之间发生了 **两次** exit（`cpuid`、第二次 `rdtsc`），handler 时间和「上一次 exit → 本次 entry」窗口都被扣干净，剩下的正好是这两次转换之和 `Δ_cpuid + Δ_rdtsc`。实测残差 10609 tick ⇒ 单次转换约 5300 tick（该值随机器/是否嵌套 VMware 变化，不能写死）；
-  - **补偿**：`0x204 TSC_SET_EXIT_OVERHEAD`（`RDX` = 每次**命中退出**要补的 tick，`0` 关闭，上限 `MAX_EXIT_OVERHEAD = 1000000`）在 `note_exit` 里对每个 `matched` 退出累加一次，于是两次读之间补两次、正好抵消。这个值只能实测：先设目标 PID，让目标量 `rdtsc; cpuid; rdtsc` 的平均值（就是残差），取**一半**填进去。它按「命中退出」统一计，不做按退出类型区分，因此只是近似——但 pafish 那类检测量的正是「两次指令模拟退出」，近似项刚好对上。**填过头会让被隐藏进程的 TSC 回退**（每次退出补得比实际转换还多），`rewind=` 就是回退次数，不为 0 就把值调小；
-  - **目标模式**（`0x200` 的 `R8`）：`0` = 只内核（CPL0）、`1` = 只用户（CPL3）、`2` = 都算（默认）。模式不允许的特权级**连 PID 都不读**（`TargetSnapshot::allows_cpl`），因为那是每次退出三跳 guest 页表翻译。非法模式返回 `RAX = 1`，不改变现有配置；
-  - **只扣 root 段，guest 段一律如实透出**：`note_exit` 只把 `entry - last_exit`（上一个 handler）记进 `last_thread` 的账，`exit - entry`（guest 执行）不扣。**不要**再给「未命中的周期」把整段 guest 时间扣到所有目标线程头上（早期「单特权级模式 = CPU 时间语义」的做法）：① TSC 是**墙钟**不是 CPU 时间，线程被换出时真实 TSC 照样走；② 多核下会**重复累加**——每个核上非目标退出的间隙都加到所有目标线程账上，12 核跑满时每过 1 秒就记 12 秒，账本永远追不上物理时间，可见值被永久钳死（真机现象：样本从几千变成**全 0**，时钟不动了）。删掉那段逻辑后 `hide_guest_gap`/`guest_gap_hidden` 都不存在了；
-  - **窗口起点一律用 handler 自己的 `rdtsc`，不信硬件 MSR-store 的值**：`note_exit` 里 `last_exit_tsc = handler_tsc`，于是窗口 `entry - last_exit` = 「上一个 handler 从开始执行到即将 vmresume」这一段，**必然落在 handler 内部**。MSR-store 的 `IA32_TSC` 在嵌套/被 host 抢占时可能比真实退出早很多（甚至是一两个退出之前的值），拿它当起点会把不属于 handler 的时间一起扣掉——真机表现是样本在「0」和「约 25000」之间乱跳：多扣一点被单调钳制压成 0，整个窗口漏掉就冒出 +25000（等于那条命中日志的 handler 时间）。少算的只有 guest→root 那次转换（~150 tick），由 `0x204` 补；
-  - **root 窗口不设上限**：`entry - last_exit` 这段全部在 root 里（handler，或者 root 被 host 抢占），都是目标不该看到的时间；
-  - `emulate_rdtsc`/`emulate_rdtscp` 判定顺序：`CPL==3` 且配了 PID → 走内核结构链取进程号比较；`CPL==0` 且配了模块 → 比较 `RIP ∈ [base, base+size)`；都不匹配就**原样返回物理 TSC**；
-  - **可见值改成按比例放慢（不再做加减法）**：`hide()` 现在是
-
-    ```text
-    可见值 = 上一次可见值 + (物理值 − 上一次物理值) / TSC_SLOWDOWN_DIVISOR   (默认 10)
-    ```
-
-    只存两个数：「上次物理值 / 上次可见值」（`CLOCK_PHYS`/`CLOCK_VISIBLE`，全局唯一）。**差值小于除数时原样透出**（`Δ < 10` 就前进 `Δ`，不做整除），否则 `Δ/10` 会把紧挨着的两次读抹成同一个值，时钟看起来"冻住"，目标的小步长自增计时也会卡住。理由：开 VT 后 `cpuid`/`rdtsc` 要多绕一次 VM-exit，目标量到的差值天然大一个数量级，逐项测量（handler、转换、被抢占）永远有残差；按比例缩放**天然单调**（只做加法，不可能倒退，不需要钳制）、**误差同比缩小**（300 → 30），而且不依赖任何时间戳（MSR-store/陈旧/跨核迁移的问题全部绕开）。第一次读（`CLOCK_PHYS == 0`）直接返回物理值并建立基准；`physical <= CLOCK_PHYS` 同样按基准重来。代价是目标看到的是**慢 10 倍**的时钟，基于 `rdtsc` 的计时/超时会按比例变长——这是拿「测不出虚拟化」换「时钟不准」。这个模式下 `0x204` 的补偿不再影响返回值（账本仍算，仅供日志诊断）；
-  - 命中时**每次都打一条日志、不限流**（日志**数值在前**，方便粘贴时不被截断：`TSC: hidden rdtsc since=.. root=.. guest=.. cpl=.. cs=.. pid=.. cpu#N by pid|module kthread=.. phys=.. -> .. host_time=.. exits=.. matched=.. overhead=.. rewind=.. stale=.. threads=.. rip=.. hits=..`）：要看清「到底哪一次 `RDTSC` 命中、CPL 多少」，抽样就会误导（内核侧命中比目标进程自己的命中多两个数量级，额度会先被内核吃光）。`kthread` 是账本的键（命中线程），`since` 是该线程「距离上一次隐藏读过了多少」，`host_time` 是该线程累计被扣掉的时间，`threads` 是已建账线程数，`exits`/`matched` 是两次读之间的退出总数与其中判成目标的次数，`rewind` 是**可见时钟被钳制（本会倒退）的次数**，`stale` 是时间戳判陈旧的次数，**`root` 是本次退出真正扣掉的 root 窗口（0 = 没扣，说明基准丢了）**，**`guest` 是本段 guest 运行了多久（命中退出会保留这段，突然变成几万 tick 说明里面混进了不产生退出的 guest 时间，比如 guest 自己的 ISR/DPC）**，`hits` 是累计命中数；
-  - 没被隐藏的读取返回同一个物理计数器，**跨核天然一致**，不存在 0x5C 那类问题；
-- **目标配置是全局的**（`selective_tsc` 的 `AtomicU32/AtomicU64`）：`RDTSC` 退出发生在 root，那里不能拿锁，所以用原子变量 + `CONFIG_GENERATION` 做无锁快照。每个 vCPU 在 `dispatch_vm_exit` 里发现自己是旧代时改自己的 `rdtsc_exiting`（`sync_tsc_hiding(cpu_id)`），不需要 IPI。**日志里的 cpu 号必须用 `vcpu.cpu_id`**：`VmxVcpu::vpid` 在所有核上都是 `GUEST_VPID`（=1），拿它打日志会显得「只有一个核在同步」；
-- **匹配规则按特权级分工，两条路互不交叉**（`tsc::match_target`）：
-  - `CPL3`：**只按进程，而且只从内核结构取**：`KPCR(IA32_KERNEL_GS_BASE) → [KPCR+0x188] KTHREAD → [+kthread_process] EPROCESS → [+eproc_pid] PID`。
-    **翻译必须用 `system_cr3`，不能用当前 guest CR3**：开了 KVA shadow 的进程，用户态
-    CR3 里内核半区没有映射，用它读 `[KPCR+0x188]` 直接失败（真机日志 `chain=None
-    kthread=0x0`，而同一次读到的 `kpcr` 是好的）。KPCR/KTHREAD/EPROCESS 都是内核对象，
-    在每个进程的系统 CR3 里都有映射。
-    **不要再用 TEB 兜底**（`[gs + 0x40]` 那条已经删除）：用户态内存不受我们控制，
-    真机上同一个进程先后出现过 `0xac256ab000` / `0xac256ad000` 两个不同的 "TEB"。
-    代价是偏移表必须和本机 `ntoskrnl` 对得上（`0x203` 下发，`build == 0` 时 CPL3
-    判定全部为「不匹配」）。失配时按 **PID 去重**打一行
-    `TSC: miss pid=.. tgt=.. kpcr=.. c3=.. u3=.. kt=.. ep=..`（`c3` 系统 CR3、`u3` 用户
-    CR3）。**字段用 `{:x}` 不用 `{:#x}`**：一条日志只有 152 字节，四个 `0x` 前缀会把
-    最后那个 `eprocess` 截断成 `0xffff`；
-  - `CPL0`：**只按内核模块**。`RIP ∈ [base, base+size)` 才算命中，不读进程号；账本的键是
-    `current_kthread(0)`（`gs` 就是 KPCR）。`KPCR_CURRENT_THREAD = 0x188` 从 Win7 到 24H2
-    没变，`tools/gen_win_offsets.py` 解析 `PsGetCurrentProcess` 时会核对它没漂；
-  - 只用 guest 页表翻译，不碰宿主结构；读失败一律按「不匹配」处理，**绝不让一次读失败
-    变成 guest 的 `#PF`**；
-- **CPL 的取法**：`guest_cpl()` 取 `vmcs::guest::CsSelector` 的低 2 位。64 位模式下
-  `CPL == CS.RPL`（Intel SDM Vol.3 §5.6），所以这里不需要看 access rights 的 DPL；
-  CS 读失败（不该发生）退回 `SsSelector` 的 RPL（SS.RPL 也恒等于 CPL），两者都读不到
-  才当 CPL0——**默认按 CPL0 而不是 CPL3**：CPL0 的链读失败只会漏报，拿 KPCR 当 TEB
-  用却会读出垃圾 PID。日志里 `cpl=` 和 `cs=` 是并列的（CPL3 通常是 `0x33`、CPL0 是
-  `0x10`），可以直接自证 CPL 没取错；
-- **不再打 `pid miss` 日志**：`match_target()` 是**每次退出**都跑的（要给账本判 `matched`），所以「配了 PID 但当前不是目标」是常态——内核侧（DPC/ISR 在被打断线程的上下文里读 TSC）比目标进程自己的 `rdtsc` 多两个数量级，一旦按失配打日志就只剩噪声。要看失配只能看命中日志的 `cpl=`/`cs=`/`pid=`/`rip=`，或者临时加一次性打印；
-- **偏移表是 CPL3 匹配的唯一依据**：需要 `kthread_process`/`eproc_pid`；`KernelArgs v4` 的 `win_offsets` 和 hypercall `0x203` 下发/覆盖它。**`build == 0` 时 CPL3 判定全部失效**（没有 TEB 退路可回），所以 uapp 必须先按 build 号选表再 `Start`；
-- **性能代价**：只要有隐藏目标，全系统 `RDTSC` 都会 exit。忙等型代码（`while (rdtsc() - t0 < N)`）会明显变慢——这是「按进程选择性拦截」绕不开的成本，不用时用 `0x200 pid=0` / `0x202 size=0` 清掉目标，`rdtsc_exiting` 会自动关回去；
-- 进程名查 PID（`0x201`）需要遍历 `PsActiveProcessHead`，链表头地址不在 `KernelArgs` 里，**当前返回 `-1`**，调用方用 `0x200` 直接传 PID；
-- `IA32_TSC_AUX`、`RDMSR IA32_TSC`、HPET/PM Timer 都不在本机制范围内：它们读到的是**未调整**的物理值；
+- **当前不做 TSC 虚拟化**：`use_tsc_offsetting=false`，`TSC_OFFSET` 不使用；`rdtsc_exiting` 显式 `false`，`RDTSC`/`RDTSCP`/`RDMSR(0x10)` 正常直接读物理 TSC（`enable_rdtscp=true`，MSR bitmap 不拦 `IA32_TSC`）。`write_adjust()` 之后读回 primary controls；如果 `rdtsc_exiting` 仍为 1，说明 CPU/外层 VMM 强制该位，启动日志会打 `rdtsc_exiting is forced on`。
+- **为什么不用 `TSC_OFFSET`**：它是 per-vCPU 的。多核各自扣减自己那段 host 时间，累积后同一物理时刻不同核读到的 TSC 会差很多；Windows HAL 跨核比较会 `0x5C HAL_INITIALIZATION_FAILED`。要让 offset 全局一致必须 IPI 同步所有核的 VMCS，成本和竞态都不划算。
+- **按进程选择性隐藏已移除**：之前用 `RDTSC_EXITING` + 全局慢时钟 + PID/模块匹配，只对目标进程/模块隐藏 VM-exit 开销；它没有同步 `RDMSR(0x10)`、`TSC_ADJUST`、`IA32_TSC_DEADLINE`，也和墙钟/CPUID.15H 不一致，现整体删除。
+- **相关 ABI**：hypercall `0x200..0x206` 保留编号，VMX/SVM 都返回 `3`；`KernelArgs v4` 的 `win_offsets` 字段保留（ABI 不变），当前无消费者。
+- **后续**：如果要重新做 TSC 虚拟化，先决定是 passthrough + 一次性读补偿（stealth），还是 TSC offset/scaling + 软件 deadline（correctness），不要恢复“按进程慢时钟”。
 - **noumen 初始化必须跑在自己的栈上**：`_init` 只是 `init_stack.S::run_on_init_stack` 的薄壳，切到 64 KiB 静态栈再调 `init_body`，返回前把 rsp 还给 loader。loader 线程的内核栈只有十几 KiB，`setup` 链（VMCS 配置 + EPT 建表 + `_klog_fmt` 的 0x130 帧 + fmt 临时量）会把它用到守卫页，症状是 **0x7F / Arg1=8（DOUBLE_FAULT）**，dump 里 RSP 停在 `StackLimit` 上方几百字节、`KiInterruptDispatch` 的 TrapFrame 落在未映射页。
 
 ## 10. SVM 关键点与坑
 
-> **TSC 虚拟化：SVM 暂不实现。** 拦截位（`Intercepts.rdtsc`/`rdtscp`）、`ControlArea.tsc_offset`
-> 都保持不置位/为 0，guest 读到的就是物理 TSC；hypercall `0x200..0x206` 返回 `RAX = 3`。
-> §9.8 那套只对 VMX 生效。
+> **TSC 虚拟化：SVM 暂不实现，VMX 也不做。** 拦截位（`Intercepts.rdtsc`/`rdtscp`）、`ControlArea.tsc_offset`
+> 都保持不置位/为 0（代码显式 `set_rdtsc(false)`/`set_rdtscp(false)`），guest 读到的就是物理 TSC；VMX 侧见 §9.8。
 
 ### 10.1 VMCB / 启动顺序
 
@@ -492,6 +454,7 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 - 主机 HSAVE 页必须在启动时先用 `VMSAVE` 初始化；否则第一次 `VMLOAD` 会把全 0 装进 FS/GS，`Vcpu::current()` 立刻失效；
 - 返回 guest 的路径是 `VMLOAD guest` → `VMRUN`；退出时已经 `VMSAVE` 过，不要重复；
 - `TLB_CONTROL` 在**下一次 `VMRUN`** 生效，不是写完立即生效；不要在每个 exit 都写 `ALL`，否则会把“按需失效”退化成永久全刷；
+- guest DR0–3 由 stub 在退出时保存、`VMRUN` 前加载；host DR0–3/6/7 在进入 Rust 前恢复；guest DR6 只在 VMCB save 区，不进 `GuestContext`；
 - ASID 0 是 host 保留值；guest vCPU 用非 0 ASID，且不要复用正在运行的 ASID。
 
 ### 10.6 事件注入与 MSRPM
@@ -557,11 +520,12 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 
 ## 14. 构建/工具链坑
 
-1. **`rust-lld` 缺失**：当前 nightly 不自带 `rust-lld`，`.cargo/config.toml` 使用绝对路径 `C:\Program Files\LLVM\bin\ld.lld.exe`。换机器要改路径。
-2. **clang 临时目录**：`build.rs` 把 `TMP/TEMP` 指到 `OUT_DIR/cc-tmp`；否则某些 Windows ACL 配置下 clang 会失败。
-3. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`um/uapp/`、`um/nsvr/`、`tools/rdtsc_probe/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
-4. **SVM 宿主测试的 cargo 配置**：`tests/test-svm-core.py` 默认在仓库外临时目录编译；不要把测试 crate 放到仓库 `target/` 下，否则会继承 `.cargo/config.toml` 的 `x86_64-unknown-none` + `build-std`，出现 `panic_handler` 缺失等假错误。
-5. **feature 组合**：每次改 `cfg` 后至少跑默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种构建。
+1. **工具链已固定**：`hypervisor/rust-toolchain.toml` 指定 `nightly-x86_64-pc-windows-msvc` + `rust-src`；在 `hypervisor/` 下直接 `cargo build` 即可，不要依赖 rustup 的 `nightly` 别名（本机该别名可能指向 GNU，导致 `rust-src` 缺失或 `#![feature]` 被 stable 拒绝）。
+2. **`rust-lld` 缺失**：当前 nightly 不自带 `rust-lld`，`.cargo/config.toml` 使用绝对路径 `C:\Program Files\LLVM\bin\ld.lld.exe`。换机器要改路径。
+3. **clang 临时目录**：`build.rs` 把 `TMP/TEMP` 指到 `OUT_DIR/cc-tmp`；否则某些 Windows ACL 配置下 clang 会失败。
+4. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`um/uapp/`、`um/nsvr/`、`tools/rdtsc_probe/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
+5. **SVM 宿主测试的 cargo 配置**：`tests/test-svm-core.py` 默认在仓库外临时目录编译；不要把测试 crate 放到仓库 `target/` 下，否则会继承 `.cargo/config.toml` 的 `x86_64-unknown-none` + `build-std`，出现 `panic_handler` 缺失等假错误。
+6. **feature 组合**：每次改 `cfg` 后至少跑默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种构建。
 
 ## 15. 测试
 

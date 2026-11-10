@@ -1,0 +1,6 @@
+# noumen 需要 nightly（`build-std` + `x86_64` crate 的 `#![feature]`）。
+# 固定到 MSVC nightly，避免 rustup 的 `nightly` 别名落到 GNU 工具链后找不到
+# 对应的 rust-src；在 hypervisor/ 下直接 `cargo build` 即可，无需 `+nightly`。
+[toolchain]
+channel = "nightly-x86_64-pc-windows-msvc"
+components = ["rust-src"]

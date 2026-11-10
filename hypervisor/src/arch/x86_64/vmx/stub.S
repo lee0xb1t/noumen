@@ -1,4 +1,8 @@
-# GuestContext 的字段偏移(与 Rust 侧的 #[repr(C)] 布局一致). 
+# GuestContext 的字段偏移(与 Rust 侧的 #[repr(C)] 布局一致).
+.equ GC_DR0,   144
+.equ GC_DR1,   152
+.equ GC_DR2,   160
+.equ GC_DR3,   168
 .equ GC_RAX,   0
 .equ GC_RCX,   8
 .equ GC_RDX,   16
@@ -16,27 +20,7 @@
 .equ GC_R15,   120
 .equ GC_CR2,   128
 .equ GC_CR8,   136
-.equ GC_DR0,   144
-.equ GC_DR1,   152
-.equ GC_DR2,   160
-.equ GC_DR3,   168
-.equ GC_DR6,   176
-.equ GC_XMM0,  192      # 16 bytes align
-.equ GC_XMM1,  208
-.equ GC_XMM2,  224
-.equ GC_XMM3,  240
-.equ GC_XMM4,  256
-.equ GC_XMM5,  272
-.equ GC_XMM6,  288
-.equ GC_XMM7,  304
-.equ GC_XMM8,  320
-.equ GC_XMM9,  336
-.equ GC_XMM10, 352
-.equ GC_XMM11, 368
-.equ GC_XMM12, 384
-.equ GC_XMM13, 400
-.equ GC_XMM14, 416
-.equ GC_XMM15, 432
+# GuestContext 保留 XMM 区域（0xC0..0x1BF），但 stub 不保存 XMM；root 不得使用 SSE/XMM。
 
 .text
 .globl vm_exit
@@ -48,6 +32,35 @@
 .extern fatal_vmresume_error
 
 vm_exit:
+    # 裸 CPUID：只判断 exit reason，执行 cpuid、RIP += 2、vmresume；不做过滤/单步处理。
+    pushq   %rbx
+    pushq   %rdx
+
+    movq    $0x4402, %rbx          # VM_EXIT_REASON
+    vmread  %rbx, %rdx
+    andl    $0xFFFF, %edx
+    cmpl    $10, %edx              # EXIT_REASON_CPUID
+    jne     .Lvm_exit_slow
+
+    cpuid
+
+    # 保存 CPUID 输出，借用 r8/r9 推进 RIP。
+    pushq   %r8
+    pushq   %r9
+    movq    $0x681E, %r8           # GUEST_RIP
+    vmread  %r8, %r9
+    addq    $2, %r9                # CPUID = 0F A2
+    movq    $0x681E, %r8
+    vmwrite %r9, %r8
+    popq    %r9
+    popq    %r8
+    addq    $16, %rsp              # 丢弃入口保存的 guest RBX/RDX
+    vmresume
+    jmp     vmresume_failed
+
+.Lvm_exit_slow:
+    popq    %rdx
+    popq    %rbx
     subq    $0x1C0, %rsp
 
     movq    %rax, GC_RAX(%rsp)
@@ -80,49 +93,18 @@ vm_exit:
     movq    %rax, GC_DR2(%rsp)
     movq    %dr3, %rax
     movq    %rax, GC_DR3(%rsp)
-    movq    %dr6, %rax
-    movq    %rax, GC_DR6(%rsp)
 
-    movaps  %xmm0, GC_XMM0(%rsp)
-    movaps  %xmm1, GC_XMM1(%rsp)
-    movaps  %xmm2, GC_XMM2(%rsp)
-    movaps  %xmm3, GC_XMM3(%rsp)
-    movaps  %xmm4, GC_XMM4(%rsp)
-    movaps  %xmm5, GC_XMM5(%rsp)
-    movaps  %xmm6, GC_XMM6(%rsp)
-    movaps  %xmm7, GC_XMM7(%rsp)
-    movaps  %xmm8, GC_XMM8(%rsp)
-    movaps  %xmm9, GC_XMM9(%rsp)
-    movaps  %xmm10, GC_XMM10(%rsp)
-    movaps  %xmm11, GC_XMM11(%rsp)
-    movaps  %xmm12, GC_XMM12(%rsp)
-    movaps  %xmm13, GC_XMM13(%rsp)
-    movaps  %xmm14, GC_XMM14(%rsp)
-    movaps  %xmm15, GC_XMM15(%rsp)
+    # 隔离：进入 C 前清空 DR0-3。
+    xorl    %eax, %eax
+    movq    %rax, %dr0
+    movq    %rax, %dr1
+    movq    %rax, %dr2
+    movq    %rax, %dr3
 
     movq    %rsp, %rdi
     call    handle_vm_exit_stub
 
     movq    %rax, %r15
-
-    movaps  GC_XMM0(%rsp), %xmm0
-    movaps  GC_XMM1(%rsp), %xmm1
-    movaps  GC_XMM2(%rsp), %xmm2
-    movaps  GC_XMM3(%rsp), %xmm3
-    movaps  GC_XMM4(%rsp), %xmm4
-    movaps  GC_XMM5(%rsp), %xmm5
-    movaps  GC_XMM6(%rsp), %xmm6
-    movaps  GC_XMM7(%rsp), %xmm7
-    movaps  GC_XMM8(%rsp), %xmm8
-    movaps  GC_XMM9(%rsp), %xmm9
-    movaps  GC_XMM10(%rsp), %xmm10
-    movaps  GC_XMM11(%rsp), %xmm11
-    movaps  GC_XMM12(%rsp), %xmm12
-    movaps  GC_XMM13(%rsp), %xmm13
-    movaps  GC_XMM14(%rsp), %xmm14
-    movaps  GC_XMM15(%rsp), %xmm15
-
-    #movq    %rax, %r15
 
     movq    GC_DR0(%rsp), %rax
     movq    %rax, %dr0
@@ -132,25 +114,11 @@ vm_exit:
     movq    %rax, %dr2
     movq    GC_DR3(%rsp), %rax
     movq    %rax, %dr3
-    movq    GC_DR6(%rsp), %rax
-    movq    %rax, %dr6
 
     movq    GC_CR2(%rsp), %rax
     movq    %rax, %cr2
     movq    GC_CR8(%rsp), %rax
     movq    %rax, %cr8
-
-    testb   %r15b, %r15b
-    movq    GC_R15(%rsp), %r15
-    jnz     vm_stop
-
-    # VM-entry 采样：尽可能贴近 VMRESUME。此时 guest 的 rax/rdx 还没恢复，
-    # 可以安全借用；结果写进 Vcpu 的第一个字段（%fs = Vcpu）。
-    lfence
-    rdtsc
-    lfence
-    movl    %eax, %fs:0
-    movl    %edx, %fs:4
 
     movq    GC_RAX(%rsp), %rax
     movq    GC_RCX(%rsp), %rcx
@@ -167,9 +135,14 @@ vm_exit:
     movq    GC_R13(%rsp), %r13
     movq    GC_R14(%rsp), %r14
 
+    testb   %r15b, %r15b
+    movq    GC_R15(%rsp), %r15
+    jnz     vm_stop
+
     addq    $0x1C0, %rsp
     vmresume
 
+vmresume_failed:
     # VMRESUME 失败时控制流落到这里。不处理就会继续往下掉进 vm_stop，
     # 用一份没在跑的 guest 状态 iretq，直接三重故障。报告指令错误后停机.
     movl    $0x4400, %eax               # VM_INSTRUCTION_ERROR

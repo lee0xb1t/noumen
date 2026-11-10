@@ -91,8 +91,7 @@ pub struct GuestContext {
     pub dr1: u64,
     pub dr2: u64,
     pub dr3: u64,
-    pub dr6: u64,
-    pub _pad3: [u8; 8], // padding: 让 XMM 区保持在 192 偏移
+    pub _pad3: [u8; 16], // padding: 让 XMM 区保持在 192 偏移
 
     // SSE registers (16 bytes alignment)
     pub xmm0: u128,
@@ -112,9 +111,8 @@ pub struct GuestContext {
     pub xmm14: u128,
     pub xmm15: u128,
 
-    /// Host DR values saved by the SVM stub around VMRUN. DR0–DR3 and DR6 are
-    /// not in the VMCB save area; DR7 is, but VMRUN replaces it with the guest
-    /// value, so all six must be restored on the host side.
+    /// Host DR values saved by the SVM stub around VMRUN (DR0–DR3/DR6 are not
+    /// switched automatically; DR7 is).
     pub host_dr0: u64,
     pub host_dr1: u64,
     pub host_dr2: u64,
@@ -201,6 +199,8 @@ const _: () = {
     assert!(offset_of!(GuestContext, rax) == 0x00);
     assert!(offset_of!(GuestContext, r15) == 0x78);
     assert!(offset_of!(GuestContext, cr2) == 0x80);
+    assert!(offset_of!(GuestContext, dr0) == 0x90);
+    assert!(offset_of!(GuestContext, dr3) == 0xA8);
     assert!(offset_of!(GuestContext, xmm0) == 0xC0);
     assert!(offset_of!(GuestContext, host_dr0) == 0x1C0);
     assert!(offset_of!(GuestContext, host_dr7) == 0x1E8);

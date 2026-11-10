@@ -18,6 +18,10 @@ impl SvmVcpu {
             control.intercept_misc1.set_msr_prot(true);
             control.intercept_misc1.set_cpuid(true);
 
+            // TSC 物理透传：RDTSC/RDTSCP 都不拦截（默认就是 0，显式写一遍）。
+            control.intercept_misc1.set_rdtsc(false);
+            control.intercept_misc2.set_rdtscp(false);
+
             // 软件断点与 TF 单步。
             control.intercept_exception.set_bp(true);
             control.intercept_exception.set_db(true);

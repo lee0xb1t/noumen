@@ -12,6 +12,10 @@
 #   - #VMEXIT leaves guest RAX/RSP in the VMCB and the other GPRs in registers;
 #   - GIF stays 0 while root runs; VMRUN sets it for the guest.
 
+.equ GC_DR0,   144
+.equ GC_DR1,   152
+.equ GC_DR2,   160
+.equ GC_DR3,   168
 .equ GC_RAX,   0
 .equ GC_RCX,   8
 .equ GC_RDX,   16
@@ -29,28 +33,8 @@
 .equ GC_R15,   120
 .equ GC_CR2,   128
 .equ GC_CR8,   136
-.equ GC_DR0,   144
-.equ GC_DR1,   152
-.equ GC_DR2,   160
-.equ GC_DR3,   168
-.equ GC_DR6,   176
-.equ GC_XMM0,  192
-.equ GC_XMM1,  208
-.equ GC_XMM2,  224
-.equ GC_XMM3,  240
-.equ GC_XMM4,  256
-.equ GC_XMM5,  272
-.equ GC_XMM6,  288
-.equ GC_XMM7,  304
-.equ GC_XMM8,  320
-.equ GC_XMM9,  336
-.equ GC_XMM10, 352
-.equ GC_XMM11, 368
-.equ GC_XMM12, 384
-.equ GC_XMM13, 400
-.equ GC_XMM14, 416
-.equ GC_XMM15, 432
-# Host DR values (appended to GuestContext; DR0-3/6 are not in the VMCB).
+# GuestContext 保留 XMM 区域（0xC0..0x1BF），但 stub 不保存 XMM；root 不得使用 SSE/XMM。
+# Host DR values saved around VMRUN.
 .equ GC_HOST_DR0, 448
 .equ GC_HOST_DR1, 456
 .equ GC_HOST_DR2, 464
@@ -98,8 +82,8 @@ svm_resume:
     movq    0(%rsp), %rax
     vmload  %rax                    # load the guest copy from the VMCB
 
-    # DR0-DR3 and DR6 are not part of the VMCB load/save subset; DR7 is loaded
-    # by VMRUN. Save the host set, then load the effective guest set.
+    # DR0-DR3 are not part of the VMCB load/save subset; DR7 is loaded by VMRUN.
+    # Save the host set, then load the effective guest set.
     # RCX is a guest GPR that VMRUN does not reload from the VMCB, so it must
     # survive this block; RAX is reloaded from VMCB_SAVE_RAX.
     movq    24(%rsp), %rax
@@ -161,24 +145,7 @@ svm_exit:
     movq    VMCB_SAVE_RAX(%rdx), %rcx
     movq    %rcx, GC_RAX(%rax)
 
-    movaps  %xmm0,  GC_XMM0(%rax)
-    movaps  %xmm1,  GC_XMM1(%rax)
-    movaps  %xmm2,  GC_XMM2(%rax)
-    movaps  %xmm3,  GC_XMM3(%rax)
-    movaps  %xmm4,  GC_XMM4(%rax)
-    movaps  %xmm5,  GC_XMM5(%rax)
-    movaps  %xmm6,  GC_XMM6(%rax)
-    movaps  %xmm7,  GC_XMM7(%rax)
-    movaps  %xmm8,  GC_XMM8(%rax)
-    movaps  %xmm9,  GC_XMM9(%rax)
-    movaps  %xmm10, GC_XMM10(%rax)
-    movaps  %xmm11, GC_XMM11(%rax)
-    movaps  %xmm12, GC_XMM12(%rax)
-    movaps  %xmm13, GC_XMM13(%rax)
-    movaps  %xmm14, GC_XMM14(%rax)
-    movaps  %xmm15, GC_XMM15(%rax)
-
-    # Save the guest DR0-3/6, then restore the host set before entering Rust.
+    # Save the guest DR0-3, then restore the host set before entering Rust.
     movq    %dr0, %rcx
     movq    %rcx, GC_DR0(%rax)
     movq    %dr1, %rcx
@@ -187,8 +154,6 @@ svm_exit:
     movq    %rcx, GC_DR2(%rax)
     movq    %dr3, %rcx
     movq    %rcx, GC_DR3(%rax)
-    movq    %dr6, %rcx
-    movq    %rcx, GC_DR6(%rax)
 
     movq    GC_HOST_DR0(%rax), %rcx
     movq    %rcx, %dr0
@@ -213,23 +178,6 @@ svm_exit:
     movq    16(%rsp), %rdx
     movq    GC_RAX(%rax), %rcx
     movq    %rcx, VMCB_SAVE_RAX(%rdx)
-
-    movaps  GC_XMM0(%rax),  %xmm0
-    movaps  GC_XMM1(%rax),  %xmm1
-    movaps  GC_XMM2(%rax),  %xmm2
-    movaps  GC_XMM3(%rax),  %xmm3
-    movaps  GC_XMM4(%rax),  %xmm4
-    movaps  GC_XMM5(%rax),  %xmm5
-    movaps  GC_XMM6(%rax),  %xmm6
-    movaps  GC_XMM7(%rax),  %xmm7
-    movaps  GC_XMM8(%rax),  %xmm8
-    movaps  GC_XMM9(%rax),  %xmm9
-    movaps  GC_XMM10(%rax), %xmm10
-    movaps  GC_XMM11(%rax), %xmm11
-    movaps  GC_XMM12(%rax), %xmm12
-    movaps  GC_XMM13(%rax), %xmm13
-    movaps  GC_XMM14(%rax), %xmm14
-    movaps  GC_XMM15(%rax), %xmm15
 
     movq    GC_RBX(%rax), %rbx
     movq    GC_RBP(%rax), %rbp

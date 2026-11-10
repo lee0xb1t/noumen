@@ -16,10 +16,7 @@ pub const KARGS_VERSION: u32 = 4;
 /// 物理内存区间上限（`MmGetPhysicalMemoryRanges` 在常见机器上 10–40 项）。
 pub const MAX_PHYS_RANGES: u32 = 256;
 
-/// Windows 内核结构偏移（EPROCESS/KPROCESS）。
-///
-/// 数据来自 loader 的 `win_offsets.rs`，对应 `memflow-win32` 的 offsets/*.toml。
-/// `build == 0` 表示未提供偏移表（非 Windows guest 或 loader 未检测到）。
+/// Windows 内核结构偏移；`build == 0` 表示未提供。选择性 TSC 移除后保留为 ABI 占位。
 #[repr(C, packed(4))]
 #[derive(Debug, Clone, Copy)]
 pub struct WinOffsets {
@@ -38,12 +35,6 @@ pub struct WinOffsets {
     /// `_KTHREAD.ApcState.Process` 的偏移；当前进程 = `gs_base + 本字段`。
     pub kthread_process: u32,
     pub reserved5: u32,
-}
-
-impl WinOffsets {
-    pub fn is_valid(&self) -> bool {
-        self.build != 0
-    }
 }
 
 #[repr(C, packed(8))]

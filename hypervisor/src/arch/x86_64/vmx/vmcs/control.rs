@@ -853,14 +853,6 @@ pub struct VmexitMsrStore {
 }
 
 impl VmexitMsrStore {
-    pub fn set_count(&mut self, count: usize) {
-        self.msr_store_count = count;
-    }
-
-    pub fn set_address(&mut self, phys_addr: u64) {
-        self.msr_store_phys = phys_addr;
-    }
-
     pub fn write(&self) -> VmResult<()> {
         let field = x86::vmx::vmcs::control::VMEXIT_MSR_STORE_COUNT;
         unsafe { x86::bits64::vmx::vmwrite(field, self.msr_store_count as u64)? };
@@ -869,21 +861,6 @@ impl VmexitMsrStore {
         unsafe { x86::bits64::vmx::vmwrite(field, self.msr_store_phys)? };
 
         Ok(())
-    }
-
-    /// Read back the count the hardware actually holds (diagnostics).
-    pub fn read_count() -> VmResult<usize> {
-        let field = x86::vmx::vmcs::control::VMEXIT_MSR_STORE_COUNT;
-        let value = unsafe { x86::bits64::vmx::vmread(field)? };
-
-        Ok(value as usize)
-    }
-
-    /// Read back the address the hardware actually holds (diagnostics).
-    pub fn read_address() -> VmResult<u64> {
-        let field = x86::vmx::vmcs::control::VMEXIT_MSR_STORE_ADDR_FULL;
-
-        Ok(unsafe { x86::bits64::vmx::vmread(field)? })
     }
 }
 

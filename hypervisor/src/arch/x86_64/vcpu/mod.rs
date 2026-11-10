@@ -106,20 +106,12 @@ impl VirtualizationBackend for Backend {
 /// base and read back by [`Vcpu::current`], and the host GDTR/IDTR/TR bases are
 /// taken from the pages that `host` holds, so it must never be `Clone`/`Copy`
 /// and must not be moved after [`Vcpu::setup`].
-/// `#[repr(C)]` 是必须的：`vmx/stub.S` 用 `%fs:0`/`%fs:4` 直接写 `tsc_entry`。
 #[repr(C)]
 pub struct Vcpu {
-    /// 最近一次 VM-entry 前的物理 TSC，由 `vmx/stub.S` 在 `vmresume` 前写入。
-    ///
-    /// **必须是第一个字段（偏移 0）**：汇编用 `%fs:0`/`%fs:4` 直接写高低 32 位。
-    pub tsc_entry: u64,
     pub cpu_id: u32,
     pub host: HostState,
     pub backend: Backend,
 }
-
-/// `vmx/stub.S` 用 `%fs:0`/`%fs:4` 写 `tsc_entry`，偏移必须真的是 0。
-const _: () = assert!(core::mem::offset_of!(Vcpu, tsc_entry) == 0);
 
 impl Vcpu {
     /// Compile-time initial value.
@@ -127,7 +119,6 @@ impl Vcpu {
     /// Runtime pages and counters are filled in by [`Vcpu::init`].
     pub const fn new() -> Self {
         Self {
-            tsc_entry: 0,
             cpu_id: 0,
             host: HostState::new(),
             backend: Backend::new(),
@@ -140,9 +131,6 @@ impl Vcpu {
         self.host.init()?;
         self.cpu_id = cpu_id;
         self.backend.init()?;
-
-        // 首次 `VMLAUNCH` 不经过 stub 的 entry 采样，先给一个合理的起点。
-        self.tsc_entry = unsafe { core::arch::x86_64::_rdtsc() };
 
         Ok(())
     }

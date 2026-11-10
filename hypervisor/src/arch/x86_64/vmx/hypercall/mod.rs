@@ -12,7 +12,6 @@ mod diag;
 mod hook;
 #[cfg(all(feature = "mem", feature = "vmx-ept"))]
 mod mem;
-mod tsc;
 #[cfg(feature = "vmx-ept")]
 mod wait;
 
@@ -97,14 +96,18 @@ pub fn dispatch(
         Hypercall::MemMap => mem::map(context),
         #[cfg(all(feature = "mem", feature = "vmx-ept"))]
         Hypercall::MemStats => mem::stats(context),
-        // TSC 选择性隐藏：设置目标进程/模块/偏移表/补偿（0x200..0x204）。
-        Hypercall::TscSetTargetPid => tsc::set_target_pid(context, vcpu),
-        Hypercall::TscSetTargetName => tsc::set_target_name(context, vcpu),
-        Hypercall::TscSetTargetModule => tsc::set_target_module(context, vcpu),
-        Hypercall::TscSetWinOffsets => tsc::set_win_offsets(context, vcpu),
-        Hypercall::TscSetExitOverhead => tsc::set_exit_overhead(context, vcpu),
-        Hypercall::TscSetDivisor => tsc::set_divisor(context, vcpu),
-        Hypercall::TscSetHitLog => tsc::set_hit_log(context, vcpu),
+        // 选择性 TSC 已移除：编号保留，返回“不支持”，避免旧 loader/uapp 的
+        // TSC 面板调用时收到 #UD。
+        Hypercall::TscSetTargetPid
+        | Hypercall::TscSetTargetName
+        | Hypercall::TscSetTargetModule
+        | Hypercall::TscSetWinOffsets
+        | Hypercall::TscSetExitOverhead
+        | Hypercall::TscSetDivisor
+        | Hypercall::TscSetHitLog => {
+            context.rax = 3;
+            Ok(())
+        }
         // 本构建未实现，保留编号。通过 RAX 报告“不支持”，避免内核调用方
         // 收到 #UD。
         #[cfg(not(feature = "vmx-ept"))]

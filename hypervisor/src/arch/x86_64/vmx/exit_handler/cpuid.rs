@@ -1,3 +1,5 @@
+//! NOTE: `vmx/stub.S` 对所有 CPUID 裸透传（不调用本函数）；恢复过滤时两边必须同步。
+
 use crate::arch::x86_64::{guest_context::GuestContext, resume::EmulationResult, vcpu::Vcpu};
 
 use super::skip_instruction;

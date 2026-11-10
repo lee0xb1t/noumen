@@ -29,11 +29,6 @@
 //! | 21 | `USER_BREAKPOINT_COMMIT` | 所有核切到 clean 视图后写入 `0xCC` | VA | - | - | `0` 或 `HookError` |
 //! | 22 | `HOOK_RETIRED` | 所有在线 vCPU 是否已 retire 当前代 | - | - | - | `1`/`0` |
 //! | 0x100 | `HOOK_HIT` | 内部：detour stub 上报命中 | hook id | 参数 | - | `0` |
-//! | 0x200 | `TSC_SET_TARGET_PID` | 设置目标进程 PID 与生效模式 | PID | 模式（0 内核 / 1 用户 / 2 都算） | - | `0` 或错误码 |
-//! | 0x201 | `TSC_SET_TARGET_NAME` | 设置目标进程名（通过名称获取 PID） | 名称缓冲区 VA | 名称字节数 | - | PID 或 `-1`（未找到） |
-//! | 0x202 | `TSC_SET_TARGET_MODULE` | 设置目标内核模块（驱动）| 模块名称 VA | 模块内存基址 | 模块大小 | `0` 或错误码 |
-//! | 0x203 | `TSC_SET_WIN_OFFSETS` | 运行时下发内核结构偏移表 | 结构 VA | 字节数（>=56） | - | `0` 或错误码 |
-//! | 0x204 | `TSC_SET_EXIT_OVERHEAD` | 设置每次命中退出的补偿 tick | tick 数 | - | - | `0` 或错误码 |
 //!
 //! 未知 key -> `#UD`；未知命令：VMX 注入 `#UD`，SVM 返回 `RAX = 3`。flush 失败会注入 `#PF`/`#GP` 且不改动环形缓冲区，
 //! guest 可以重试。记录是 `logger_msg`（152 字节）。
@@ -128,19 +123,13 @@ pub enum Hypercall {
     SvmHookInstallNpt = 0x3a,
     /// detour stub 的内部命中上报。
     HookHit = 0x100,
-    /// 设置 TSC 隐藏的目标进程 PID。
+    /// 保留：选择性 TSC 已移除；VMX/SVM 都返回 `3`。
     TscSetTargetPid = 0x200,
-    /// 通过进程名查询 PID（遍历 EPROCESS 链）。
     TscSetTargetName = 0x201,
-    /// 设置 TSC 隐藏的目标内核模块（驱动）。
     TscSetTargetModule = 0x202,
-    /// 运行时下发 Windows 内核结构偏移表（`RDX` = 56 字节结构 VA，`R8` = 长度）。
     TscSetWinOffsets = 0x203,
-    /// 设置每次命中退出的补偿值（`RDX` = tick，`0` 关闭）。
     TscSetExitOverhead = 0x204,
-    /// 设置可见时钟的除数（`RDX` = N，`1..=1000000`，默认 10）。
     TscSetDivisor = 0x205,
-    /// 开关命中日志（`RDX` = `0` 关、非 0 开，默认开）。
     TscSetHitLog = 0x206,
 }
 

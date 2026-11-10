@@ -27,7 +27,6 @@ impl SvmVcpu {
         self.ctx.dr1 = 0;
         self.ctx.dr2 = 0;
         self.ctx.dr3 = 0;
-        self.ctx.dr6 = GUEST_DR6_RESET;
         self.vmcb.save.dr6 = GUEST_DR6_RESET;
         self.vmcb.save.dr7 = GUEST_DR7_RESET;
 

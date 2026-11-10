@@ -34,50 +34,6 @@ pub fn dispatch_vm_exit(context: &mut GuestContext, vcpu: &mut Vcpu, reason: Exi
 
     // APERF/MPERF 按需同步：只在 guest 真读时累加，退出路径不花时间。
 
-    // 选择性 TSC 隐藏：给本核记账，并把 `rdtsc_exiting` 同步到最新配置。
-    {
-        use crate::arch::x86_64::vmx::state::selective_tsc;
-
-        let entry_tsc = vcpu.tsc_entry;
-        let cpu_id = vcpu.cpu_id;
-        let active = selective_tsc::hiding_active();
-        let vmx = vcpu.backend.as_vmx_mut();
-
-        vmx.sync_tsc_hiding(cpu_id);
-
-        if active {
-            // 退出时刻优先用硬件 MSR-store 记下的 `IA32_TSC`：它在退出转换过程中
-            // 就写好了，比这里再 `rdtsc` 早 handler 序言那一段；没配成功才退回。
-            // `handler_tsc` 用来校验这个值没被陈旧数据污染（见 `note_exit`）。
-            let handler_tsc = unsafe { x86::time::rdtsc() };
-
-            // 这两条都必须**按 vCPU 取值**：它们是硬件在本次退出时写进
-            // `Vcpu.msr_store` 的，只对当前核有效。早先 KPCR 走了全局原子量，12 个核
-            // 同时退出时会互相覆盖，`match_target` 拿到的可能是别的核的 KPCR，于是
-            // 读到别的线程的 KTHREAD → PID 判错 → 什么都不命中。
-            let (exit_tsc, exit_kpcr) = if vmx.selective_tsc.uses_msr_store() {
-                let area = unsafe { &*vmx.msr_store.as_mut_ptr() };
-
-                (area.exit_tsc(), Some(area.exit_kernel_gs_base()))
-            } else {
-                (handler_tsc, None)
-            };
-
-            let matched = tsc::match_target(exit_kpcr);
-            // 账本按线程分账：命中时拿到 KTHREAD，未命中是 `None`。
-            let thread = matched.and_then(|matched| matched.thread);
-
-            vmx.selective_tsc.set_match(matched);
-
-            // 诊断：本段 guest 跑了多久（命中退出会如实透出这段，见 `SelectiveTsc::guest_run`）。
-            vmx.selective_tsc.guest_run = exit_tsc.wrapping_sub(entry_tsc);
-
-            vmx.selective_tsc.note_exit(exit_tsc, entry_tsc, handler_tsc, true, thread);
-        } else {
-            vmx.selective_tsc.set_match(None);
-        }
-    }
-
     let result: EmulationResult<()> = match reason.basic_exit_reason() as u32 {
         // CPU state and exceptions.
         ExitReason::EXCEPTION_OR_NMI => exception::handle_exception_or_nmi(vcpu, context),

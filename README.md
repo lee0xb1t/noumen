@@ -238,7 +238,8 @@ VMX 使用 EPT 视图，SVM 使用 identity NPT + 直接映射。失败通过 `R
 
 - [README.md](README.md)：中文项目概览、feature、构建、日志；
 - [README_en.md](README_en.md)：英文项目概览；
-- [AGENTS.md](AGENTS.md)：架构、ABI、全部坑、EPT/SVM/mem 细节。
+- [AGENTS.md](AGENTS.md)：架构、ABI、全部坑、EPT/SVM/mem 细节；
+- 研究笔记和 SDM 已移至 `C:\learn\my_learning\hypervisor\`（`research/`、`books/`），不属于本仓库产品文档。
 
 ## 已知限制
 

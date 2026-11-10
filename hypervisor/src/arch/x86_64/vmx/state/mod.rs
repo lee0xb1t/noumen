@@ -23,14 +23,8 @@ mod guest;
 mod host;
 mod init;
 pub mod perf;
-pub mod selective_tsc;
 
-/// TSC 虚拟化策略（写在文档里，代码里没有开关）：
-///
-/// 硬件 `use_tsc_offsetting` 已经**不再使用**。`TSC_OFFSET` 是 per-vCPU 的，
-/// 12 个核各自扣减 host 时间会累积时钟差，Windows 的 HAL 定时器跨核比较时
-/// 直接 `0x5C`。现在只做**选择性隐藏**（见 [`selective_tsc`]）：拦 `RDTSC`，
-/// 只对目标进程/模块的读取做减法，其它读取原样返回物理 TSC（天然跨核一致）。
+// TSC 物理透传：不使用 offset/scaling，也不按进程过滤。
 
 /// APERF/MPERF 虚拟化开关：MSR bitmap 拦截 + `VirtualPerfCounters`。
 ///
@@ -170,9 +164,6 @@ pub struct VmxVcpu {
     vmxon: memory::Page<vmcs::types::Vmxon>,
     vmcs: memory::Page<vmcs::types::Vmcs>,
     pub(super) msr_bitmap: memory::Page<vmcs::types::VmxMsrBitmap>,
-    /// VM-exit MSR-store 区域：硬件每次退出把 `IA32_TSC` 写在这里，
-    /// 作为 TSC 隐藏账本的「退出时刻」，见 [`selective_tsc::MsrStoreArea`]。
-    pub msr_store: memory::Page<selective_tsc::MsrStoreArea>,
     #[cfg(feature = "vmx-ept")]
     pub ept: ept::EptData,
     pub cached: VmxCachedData,
@@ -181,8 +172,6 @@ pub struct VmxVcpu {
     pub cet: CetMsrs,
     /// Guest-visible APERF/MPERF, see [`perf::VirtualPerfCounters`].
     pub perf: perf::VirtualPerfCounters,
-    /// 选择性 TSC 隐藏：每核的 host 时间账本，见 [`selective_tsc::SelectiveTsc`]。
-    pub selective_tsc: selective_tsc::SelectiveTsc,
     /// 本核 EPT 已经同步到的代数, 见 [`ept::memory_type_generation`].
     #[cfg(feature = "vmx-ept")]
     pub ept_generation: u32,
@@ -212,14 +201,12 @@ impl VmxVcpu {
             vmxon: memory::Page::empty(),
             vmcs: memory::Page::empty(),
             msr_bitmap: memory::Page::empty(),
-            msr_store: memory::Page::empty(),
             #[cfg(feature = "vmx-ept")]
             ept: ept::EptData::new(),
             cached: VmxCachedData::new(),
             vpid: 0,
             cet: CetMsrs::new(),
             perf: perf::VirtualPerfCounters::new(),
-            selective_tsc: selective_tsc::SelectiveTsc::new(),
             #[cfg(feature = "vmx-ept")]
             ept_generation: 0,
             #[cfg(feature = "vmx-ept")]
@@ -239,7 +226,6 @@ impl VmxVcpu {
         self.vmxon = memory::alloc()?;
         self.vmcs = memory::alloc()?;
         self.msr_bitmap = memory::alloc()?;
-        self.msr_store = memory::alloc()?;
         #[cfg(feature = "vmx-ept")]
         {
             self.ept.init()?;
