@@ -33,7 +33,7 @@ Notes:
 - With a backend feature disabled, the core still compiles and related hook/mem hypercalls return `RAX = 3`.
 - With both `serial-console` and `buffer-log` disabled, `klog!` still type-checks its arguments but produces no output.
 
-When using `serial-console`, COM1 may already be owned by Windows' `serial.sys`. Disable the port in Device Manager, or remove `C:\WINDOWS\System32\drivers\serial.sys` if needed (this affects other serial devices).
+When using `serial-console`, Windows owns COM1; the only solution is to delete `C:\WINDOWS\System32\drivers\serial.sys`.
 
 ## Build
 

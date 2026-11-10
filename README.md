@@ -33,7 +33,7 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 - 关闭 `vmx-ept`/`svm-npt` 时核心仍可编译，相关 hook/mem hypercall 返回 `RAX = 3`。
 - 同时关闭 `serial-console` 和 `buffer-log` 时，`klog!` 仍参与类型检查，但不输出。
 
-使用 `serial-console` 时，COM1 可能已被 Windows 的 `serial.sys` 占用；可在设备管理器中禁用对应串口，或按需移除 `C:\WINDOWS\System32\drivers\serial.sys`（会影响其他串口设备）。
+使用 `serial-console` 时，Windows 会占用 COM1，唯一解决办法是删除 `C:\WINDOWS\System32\drivers\serial.sys`。
 
 ## 构建
 
