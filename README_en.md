@@ -12,6 +12,7 @@ The loader in this repository is a Windows kernel driver. It allocates nonpaged 
 
 - Intel VMX: VMCS, EPT, VPID, MSR bitmap, MTRR, EPT hooks, EPT native breakpoints, HideSelf;
 - AMD SVM: VMCB, NPT, MSRPM, NPT hooks, HideSelf; NPT hooks are incomplete and there are no NPT native breakpoints;
+- VMX CPUID is passed through natively; `hypervisor-msr` separately controls outer-hypervisor MSRs;
 - Unified hypercall ABI with per-backend dispatch;
 - `MEM_*` batch read/write, translation, scanning, physical ranges, and statistics;
 - Log ring, panic details, and optional COM1 serial output.
@@ -25,6 +26,7 @@ The loader in this repository is a Windows kernel driver. It allocates nonpaged 
 | `panic-detail` | Yes | Panic register snapshot, `KernelArgs`, and symbol backtrace |
 | `vmx-ept` | Yes | Intel backend, identity EPT, EPT hook/mem |
 | `native-bp` | No | VMX native breakpoints, #BP/#CP/NMI exits; enable explicitly when needed, depends on `vmx-ept` |
+| `hypervisor-msr` | No | Pass through outer `0x40000000..=0x400000FF` MSRs; default is `#GP`, enable only for VMware/nested runs |
 | `svm-npt` | Yes | AMD identity NPT, NPF, NPT hook/mem |
 | `mem` | Yes | Generic `MEM_*` service, implemented per backend |
 
@@ -33,6 +35,7 @@ Notes:
 - `mem` does not imply `vmx-ept` or `svm-npt`; add the backend feature explicitly with `--no-default-features`.
 - With a backend feature disabled, the core still compiles and related hook/mem hypercalls return `RAX = 3`; VMX EPT hook/HideSelf are not compiled, and `enable_vpid`/`unrestricted_guest` are off.
 - `native-bp` is off by default; enable it explicitly (it depends on `vmx-ept`) when `UserBreakpoint`/`#BP`/`#CP`/NMI are needed. Leave it off for MEM_*/HideSelf-only builds to avoid the associated TSC inflation.
+- `hypervisor-msr` is off by default. VMX CPUID is always raw-passthrough; this feature only controls `0x40000000..=0x400000FF` outer-hypervisor MSRs. The default injects `#GP`; enable it only for VMware/nested environments.
 - With both `serial-console` and `buffer-log` disabled, `klog!` still type-checks its arguments but produces no output.
 
 When using `serial-console`, Windows owns COM1; the solution is to delete `C:\WINDOWS\System32\drivers\serial.sys`.
@@ -48,7 +51,9 @@ python build.py
 # One flavor only
 python build_deviceio.py
 python build_kdmapper.py
+python build_kdmapper.py --hypervisor-msr   # VMware/nested environments
 
+# The kdmapper build rewrites noumen_data.h temporarily, then restores it
 # Debug, skip the driver
 python build.py --debug --skip-driver
 
@@ -124,11 +129,13 @@ Command families:
 ## Documentation
 
 - [DOCS.md](DOCS.md): architecture, ABI, implementation details, and pitfalls;
+- [loader/windows/kernel/deviceio/README.md](loader/windows/kernel/deviceio/README.md): deviceio IOCTL/command ABI;
 - [README.md](README.md): Chinese overview;
 
 ## Known limitations
 
 - Host tests do not cover hardware virtualization paths;
+- Raw VMX CPUID passthrough exposes the host VMX/hypervisor bits; noumen still rejects `CR4.VMXE`/`VMXON`;
 - NPT has no execute-only support; NPT hooks rely on time-sliced views and are less stealthy than EPT;
 - In single-core mode, only the virtualized CPU can execute hypercalls.
 

@@ -54,6 +54,8 @@ python build.py --debug --skip-driver
 python build.py --no-serial
 ```
 
+`--hypervisor-msr` 只控制 `0x4000_0000..=0x4000_00ff` 的外层 hypervisor MSR；VMX CPUID 始终全量裸透传。默认关闭，真机保持严格 MSR 行为；VMware/嵌套环境才建议显式开启。
+
 产出：
 
 ```text
@@ -90,6 +92,7 @@ python tools/file_to_c_array.py input.bin -o output.h -n noumen_data
 | `panic-detail` | 是 | panic 寄存器快照、KernelArgs、符号回溯 |
 | `vmx-ept` | 是 | Intel 后端 + identity EPT + EPT hook/mem |
 | `native-bp` | 否 | VMX 原生断点、`#BP`/`#CP`/NMI 拦截；需要时显式开启，依赖 `vmx-ept` |
+| `hypervisor-msr` | 否 | 透传外层 hypervisor MSR `0x4000_0000..=0x4000_00ff`；默认严格注入 `#GP`，仅用于 VMware/嵌套环境 |
 | `svm-npt` | 是 | AMD 的 identity NPT、NPF、NPT hook/mem、HideSelf |
 | `mem` | 是 | `MEM_*` 通用内存服务；后端各自实现 |
 
@@ -97,6 +100,7 @@ python tools/file_to_c_array.py input.bin -o output.h -n noumen_data
 
 - `mem` **不再隐含** `vmx-ept`。构建时若只要内存服务，必须显式同时给后端 feature。
 - **`native-bp` 依赖 `vmx-ept`，默认关闭**：控制 VMX 原生断点（`UserBreakpoint`）、`#BP`/`#CP` 异常位图和 NMI exiting。需要时显式加 `native-bp`；关闭时不拦截 `#BP`/`#CP`/NMI，原生断点和等待命令返回 `3`，适合只用 `MEM_*`/HideSelf 的镜像；此时 EPT detour/HideSelf 仍可用。
+- **`hypervisor-msr` 默认关闭**：VMX CPUID 始终裸透传，和这个 feature 无关。关闭时 `emulate_rdmsr`/`emulate_wrmsr` 对 `0x4000_0000..=0x4000_00ff` 注入 `#GP(0)`；开启后先尝试真实 MSR，外层不支持时读返回 0、写忽略。只应在 guest 启动时已经发现外层 hypervisor（典型是 VMware 下 Windows 已经在用 Hyper-V synthetic timer MSR）时开启，否则既暴露外层 MSR，也失去 MSR 探测隔离。
 - `POOL_PAGES`：开启 `vmx-ept` 或 `svm-npt` 时为 8192（32 MiB），否则 2048；页池不够时 EPT/NPT 初始化会失败。
   页池预算（`MAX_CPUS == 32`，最坏情况=2 MiB 模式覆盖 64 GiB）：每 vCPU 约 79 页（1 PML4 + 1 PDPT + 64 个 PD 表 + 1 dummy + 12 页 VMXON/VMCS/MSR bitmap/hide/host），32 核约 2528 页；宿主页表 514 页，内部日志环 20 页，合计约 3062 页；hook 拆表页和 fake/trampoline 副本再预留 2048 页，峰值约 5110 页（20 MiB）。1 GiB 模式每 vCPU 约 3 页（1 PML4 + 1 PDPT + 1 dummy），混合 MTRR 段每段再加 1 张 PD 表。NPT 同样按 `min(2^MAXPHYADDR, 1 TiB)`（1 GiB 叶）或 64 GiB（2 MiB 叶）覆盖，每 vCPU 约 3–66 页。
 - **CET**：VMX 用 VM-exit bit 28 `load_ia32_cet_state` + VM-entry bit 20 `load_cet_state` 虚拟化 `IA32_S_CET`/`SSP`/`IA32_INTERRUPT_SSP_TABLE_ADDR`；另外五个没有 VMCS 字段的 CET MSR（`IA32_U_CET`、`IA32_PL0..PL3_SSP`）**透传**（见 §9.6）。CPUID 当前是裸透传，不再屏蔽 leaf 7；如果 CET 控制位读回不生效或加载时 CET 未打开，guest 仍可能看到 CET 支持，从而触发 `#CP`/`0xEF`。SVM 的 VMCB 保存区本来就有 `s_cet`/`ssp`/`isst_addr`，由 VMRUN/#VMEXIT 自动换入换出（见 §10.2）。
@@ -324,8 +328,8 @@ RIP 推进只能有一个所有者：
   - 运行时按需置位：`monitor_trap_flag`（hide/MTF 单步）、`interrupt_window_exiting`/`nmi_window_exiting`（异常窗口）。
 - **MSR 探测语义**：
   - `0x480..=0x491` 是只读的 VMX capability MSR；guest 读走 `emulate_rdmsr` 注入 `#GP(0)`，写不拦截，由硬件直接 `#GP`。
-  - `0x4000_0000..=0x4000_00FF` 没有体系结构 backing，`RDMSR`/`WRMSR` 都注入 `#GP(0)`；不要返回 0，否则与裸机不一致，也是可检测信号。
-  - `emulate_rdmsr` 顺序为 APERF/MPERF → CET → `IA32_FEATURE_CONTROL` → VMX capability → hypervisor MSR → safe fallback，并标记 `#[inline]`。
+  - `0x4000_0000..=0x4000_00FF` 的行为由 `hypervisor-msr` 决定：默认 `RDMSR`/`WRMSR` 都注入 `#GP(0)`；开启后 `RDMSR` 先透传真实 MSR，外层 `#GP` 时返回 0，`WRMSR` 外层失败时忽略。默认值用于真机隐藏；VMware/嵌套环境才应开启，否则 Windows 已初始化的 Hyper-V synthetic timer MSR 会触发 `#GP` → `0xC0000096` → 0x1E/0x3D。
+  - `emulate_rdmsr` 顺序为 APERF/MPERF → CET → `IA32_FEATURE_CONTROL` → VMX capability → hypervisor MSR（feature 分支）→ safe fallback，并标记 `#[inline]`。
 
 ### 9.2 EPT hook
 
@@ -385,7 +389,7 @@ Free → InFlight → Active → Closing → Retired → Free
 - root 侧必须关闭 supervisor 影子栈：`HOST_S_CET = HOST_SSP = HOST_INTR_SSP_TABLE = 0`。否则 noumen 在 root 里的 `call`/`ret` 会消费 guest 的影子栈；
 - `configure_cet_state()` 只有在两个控制位**读回都生效**时才置 `cached.cet_virtualized`；CPUID 现在是裸透传，**不再根据该状态屏蔽 leaf 7 的 CET**。如果控制位不可用，guest 仍可能看到 CET 支持并启用影子栈，从而出现 `#CP`；
 - VMX 没有 `IA32_U_CET`/`IA32_PL0_SSP`/`IA32_PL1_SSP`/`IA32_PL2_SSP`/`IA32_PL3_SSP` 的 VMCS 字段，但 VM exit/entry 不会改动这些 MSR，所以**透传**（不拦截）；拦截它们会让 guest 每次 syscall 写 `PL3_SSP` 都产生 VM exit；
-- `#CP`（vector 21）进异常位图，原样注入回 guest；日志只保留限流后的 `Unhandled` 类记录，不再打印 CET 快照；
+- `#CP`（vector 21）只有在 `native-bp` 打开时才进异常位图并原样注入回 guest；关闭时由 guest 自己处理。日志只保留限流后的 `Unhandled` 类记录，不再打印 CET 快照；
 - **只有加载时 CET 已经打开（`CR4.CET=1`）才接管 CET**：`cet_virtualized = cet_active_at_setup`。CPUID 裸透传后，guest 是否启用 CET 由原始 leaf 7 决定；加载后才打开 CET 时，已经在跑的线程没有影子栈条目，下一次 `ret` 就 `#CP`（`FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS`）。
 - 开了 load-CET 后，guest 的 `IA32_S_CET`/`IA32_INTERRUPT_SSP_TABLE_ADDR` 每次 entry 都从 VMCS 字段加载，所以这两个 MSR 的 `WRMSR` 必须拦截（`setup_msr_bitmap`）并写字段，不能写真实 MSR；`RDMSR` 不拦截（entry 已把 MSR 装成字段值）；
 - `IA32_U_CET`/`IA32_PL0_SSP`/`IA32_PL3_SSP` 透传给 guest，root 不使用它们；
@@ -547,7 +551,7 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 3. **clang 临时目录**：`build.rs` 把 `TMP/TEMP` 指到 `OUT_DIR/cc-tmp`；否则某些 Windows ACL 配置下 clang 会失败。
 4. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`tools/rdtsc_probe/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
 5. **SVM 宿主测试的 cargo 配置**：`tests/test-svm-core.py` 默认在仓库外临时目录编译；不要把测试 crate 放到仓库 `target/` 下，否则会继承 `.cargo/config.toml` 的 `x86_64-unknown-none` + `build-std`，出现 `panic_handler` 缺失等假错误。
-6. **feature 组合**：每次改 `cfg` 后至少跑默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种构建。
+6. **feature 组合**：每次改 `cfg` 后至少跑默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种构建；涉及外层兼容时再跑 `--features hypervisor-msr`。
 
 ## 15. 测试
 
@@ -600,9 +604,10 @@ python tests/test-mem-core.py
 
 - `README.md`：中文项目概览、feature、构建、日志；
 - `README_en.md`：英文项目概览；
+- `loader/windows/kernel/deviceio/README.md`：deviceio 驱动的 IOCTL/命令 ABI；
 - `DOCS.md`：架构、ABI、全部坑、EPT/SVM/mem 细节。
 
-`docs/` 已移除，内容已合并到本文件。`tests/` 保留宿主测试脚本和 SVM harness；不要重新引入外部项目分析、旧移植计划或驱动/调用方专项文档。
+`docs/` 已移除，内容已合并到本文件。`tests/` 保留宿主测试脚本和 SVM harness；不要重新引入外部项目分析或旧移植计划。deviceio README 只维护现有 IOCTL/命令 ABI。
 
 ## 18. 修改检查清单
 
@@ -619,6 +624,7 @@ python tests/test-mem-core.py
 - [ ] `cargo build --release`
 - [ ] `cargo build --no-default-features --features vmx-ept`
 - [ ] `cargo build --no-default-features --features svm-npt`
+- [ ] `cargo build --release --features hypervisor-msr`
 - [ ] `cargo build --no-default-features`
 - [ ] `python tests/test-ept-core.py`
 - [ ] `python tests/test-svm-core.py`

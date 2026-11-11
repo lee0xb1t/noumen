@@ -12,6 +12,7 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 
 - Intel VMX：VMCS、EPT、VPID、MSR bitmap、MTRR、EPT hook、EPT 原生断点、HideSelf；
 - AMD SVM：VMCB、NPT、MSRPM、NPT hook、HideSelf；NPT hook 为不完整实现，且没有 NPT 原生断点；
+- VMX CPUID 全量原生透传；`hypervisor-msr` 单独控制外层 hypervisor MSR；
 - 统一 hypercall ABI，两个后端分别分发；
 - `MEM_*` 批量读写、翻译、扫描、物理区间和统计；
 - 日志环、panic 明细，可选 COM1 串口。
@@ -25,6 +26,7 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 | `panic-detail` | 是 | panic 寄存器快照、KernelArgs、符号回溯 |
 | `vmx-ept` | 是 | Intel 后端、identity EPT、EPT hook/mem |
 | `native-bp` | 否 | VMX 原生断点、#BP/#CP/NMI 拦截；需要时显式开启，依赖 `vmx-ept` |
+| `hypervisor-msr` | 否 | 透传外层 `0x40000000..=0x400000FF` MSR；默认注入 `#GP`，仅 VMware/嵌套环境开启 |
 | `svm-npt` | 是 | AMD identity NPT、NPF、NPT hook/mem |
 | `mem` | 是 | 通用 `MEM_*` 服务，后端各自实现 |
 
@@ -33,6 +35,7 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 - `mem` 不隐含 `vmx-ept`/`svm-npt`；使用 `--no-default-features` 时要显式加后端 feature。
 - 关闭 `vmx-ept`/`svm-npt` 时核心仍可编译，相关 hook/mem hypercall 返回 `RAX = 3`；VMX 的 EPT hook/HideSelf 不编译，`enable_vpid`/`unrestricted_guest` 也关闭。
 - `native-bp` 默认关闭；需要 `UserBreakpoint`/`#BP`/`#CP`/NMI 时显式开启（依赖 `vmx-ept`）。只使用 `MEM_*`/HideSelf 时保持关闭，避免这些退出带来的 TSC 膨胀。
+- `hypervisor-msr` 默认关闭；VMX CPUID 始终裸透传，这个 feature 只控制 `0x40000000..=0x400000FF` 的外层 MSR。默认严格注入 `#GP`，VMware/嵌套环境才开启透传。
 - 同时关闭 `serial-console` 和 `buffer-log` 时，`klog!` 仍参与类型检查，但不输出。
 
 使用 `serial-console` 时，Windows 会占用 COM1，解决办法是删除 `C:\WINDOWS\System32\drivers\serial.sys`。
@@ -48,7 +51,9 @@ python build.py
 # 只构建其中一版
 python build_deviceio.py
 python build_kdmapper.py
+python build_kdmapper.py --hypervisor-msr   # VMware/嵌套环境
 
+# kdmapper 构建会临时改写 noumen_data.h，编译结束自动恢复
 # Debug，跳过驱动
 python build.py --debug --skip-driver
 
@@ -124,11 +129,13 @@ RAX = 返回值
 ## 文档
 
 - [DOCS.md](DOCS.md)：架构、ABI、全部实现细节和坑；
+- [loader/windows/kernel/deviceio/README.md](loader/windows/kernel/deviceio/README.md)：deviceio IOCTL/命令 ABI；
 - [README_en.md](README_en.md)：英文概览；
 
 ## 已知限制
 
 - 宿主测试不覆盖硬件虚拟化路径；
+- VMX CPUID 全量裸透传会暴露宿主 VMX/hypervisor 位；noumen 仍拒绝 `CR4.VMXE`/`VMXON`；
 - NPT 没有 execute-only，NPT hook 依赖时间片视图切换，隐蔽性弱于 EPT；
 - 单核模式下只有被虚拟化的 CPU 能执行 hypercall。
 

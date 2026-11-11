@@ -6,7 +6,7 @@ Windows 内核驱动。加载后只建立 `\\.\Noumen` 通信设备，不会自�
 
 - 设备：`\\.\Noumen`
 - IOCTL：`NOUMEN_IOCTL_EXECUTE`，值 `0x00222000`
-- 协议版本：`NOUMEN_PROTOCOL_VERSION`，当前为 3
+- 协议版本：`NOUMEN_PROTOCOL_VERSION`，当前为 4
 - 输入：16 字节 `NOUMEN_REQUEST_HEADER` + 命令负载
 - 输出：16 字节 `NOUMEN_RESPONSE_HEADER` + 命令返回数据
 
@@ -85,13 +85,22 @@ DeviceIoControl(hDevice,
 |---|---|---|---|
 | 0 | Ping | `NOUMEN_PING`，8 字节 | `NOUMEN_PING_RESPONSE`，8 字节 |
 | 1 | GetInfo | 无 | `NOUMEN_INFO`，72 字节 |
-| 2 | GetKernelArgs | 无 | `NOUMEN_KERNEL_ARGS`，80 字节 |
-| 3 | SetKernelArgs | `NOUMEN_KERNEL_ARGS`，80 字节 | 无 |
+| 2 | GetKernelArgs | 无 | `NOUMEN_KERNEL_ARGS`，168 字节 |
+| 3 | SetKernelArgs | `NOUMEN_KERNEL_ARGS`，168 字节 | 无 |
 | 4 | SetImagePath | 8 字节头 + UTF-16 路径 | 无 |
 | 5 | SetLogPath | 8 字节头 + UTF-16 路径 | 无 |
 | 6 | StartHypervisor | `NOUMEN_START_HYPERVISOR`，8 字节 | 无 |
 | 7 | StopHypervisor | 无 | 无 |
 | 8 | HypercallPing | `NOUMEN_HYPERCALL_PING_REQUEST`，16 字节 | `NOUMEN_HYPERCALL_PING_RESPONSE`，16 字节 |
+| 9 | EptHook | `NOUMEN_EPT_HOOK_REQUEST` | `NOUMEN_EPT_HOOK_RESPONSE` |
+| 10 | ResolveNtCreateFile | 见 `command.h` | 见 `command.h` |
+| 11 | ReadKernelImage | `NOUMEN_READ_KERNEL_IMAGE` | 原始镜像字节 |
+| 12 | GetOsInfo | 无 | `NOUMEN_OS_INFO` |
+| 13 | SvmHook | `NOUMEN_SVM_HOOK_REQUEST` | `NOUMEN_EPT_HOOK_RESPONSE` |
+| 14 | HookNtCreateFile | `NOUMEN_NT_CREATE_FILE_REQUEST` | `NOUMEN_NT_CREATE_FILE_RESPONSE` |
+| 15 | SetWinOffsets | `NOUMEN_WIN_OFFSETS`，56 字节 | 无 |
+
+`NoumenCommandMax` 当前为 16；9–15 的完整字段和错误码见 `command.h` 与对应 handler。
 
 ## Ping (0)
 
@@ -144,7 +153,7 @@ Ping 不依赖 hypervisor，启动前也能用。
 
 ## GetKernelArgs (2)
 
-无输入，输出 `NOUMEN_KERNEL_ARGS`，80 字节。
+无输入，输出 `NOUMEN_KERNEL_ARGS`，168 字节。
 
 - 没 Set 过也没启动过：全 0。
 - Set 过但没启动：返回 Set 的值。
@@ -152,13 +161,13 @@ Ping 不依赖 hypervisor，启动前也能用。
 
 返回：
 - `STATUS_SUCCESS`：正常。
-- `STATUS_BUFFER_TOO_SMALL`：输出不足 80 字节。
+- `STATUS_BUFFER_TOO_SMALL`：输出不足 168 字节。
 
 ## SetKernelArgs (3)
 
-输入 `NOUMEN_KERNEL_ARGS`，80 字节。无输出。
+输入 `NOUMEN_KERNEL_ARGS`，168 字节。无输出。
 
-调用成功后，驱动把这份结构视为已初始化，下一次 Start 不再自动填任何字段。结构包括 `SystemCr3`、`SystemCr3Virt`、`KernelBase/Size`、符号表、字符串表、`LogBase/Size`、`CpuCount` 和物理区间（`PhysMapBase/Count`，可为 0）。
+调用成功后，驱动把这份结构视为已初始化，下一次 Start 不再自动填任何字段。结构包括 `SystemCr3`、`SystemCr3Virt`、`KernelBase/Size`、符号表、字符串表、`LogBase/Size`、`CpuCount`、`KernelPfnBase/Count`、物理区间（`PhysMapBase/Count`，可为 0）以及 v4 的 `WinOffsets`（56 字节）。
 
 这里没有“只改一个字段”的接口。调用 Set 之后要么给完整结构，要么就不要调用。只填一部分会让其余字段保持 0，启动时很可能直接蓝屏。
 
@@ -167,7 +176,7 @@ Ping 不依赖 hypervisor，启动前也能用。
 返回：
 - `STATUS_SUCCESS`：已保存。
 - `STATUS_UNSUCCESSFUL`：已经调用过 `_start`，不能再改。需要卸载驱动重新加载。
-- `STATUS_INVALID_PARAMETER`：输入不足 80 字节。
+- `STATUS_INVALID_PARAMETER`：输入不足 168 字节。
 
 只有 `_start` 还没执行时可以改。启动失败但失败发生在 `_start` 之前，比如镜像文件打不开，可以改完再试。
 
