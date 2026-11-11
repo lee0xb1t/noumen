@@ -38,6 +38,12 @@ panic-detail = []
 # the guest runs on the host page tables directly:
 #   cargo build --release --no-default-features --features panic-detail,vmx-ept
 vmx-ept = []
+# Outer-hypervisor MSR compatibility. Off by default: 0x4000_0000..=0x4000_00ff
+# MSRs return #GP, so the guest cannot probe the outer hypervisor. Enable for
+# VMware/nested runs where Windows has already discovered the outer hypervisor
+# and needs those MSRs (for example Hyper-V synthetic timers):
+#   cargo build --release --features hypervisor-msr
+hypervisor-msr = []
 # VMX native breakpoints: UserBreakpoint hooks, the #BP exception bitmap, NMI
 # exiting/window handling and the breakpoint wait hypercalls. It depends on
 # `vmx-ept` and is NOT in the default feature set; enable it explicitly when

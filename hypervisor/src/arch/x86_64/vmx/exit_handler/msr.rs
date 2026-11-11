@@ -62,21 +62,32 @@ pub(super) fn emulate_rdmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         return Err(EmulationError::gp(0));
     }
 
-    // Hypervisor-reserved MSRs (0x4000_0000..=0x4000_00ff) have no architectural
-    // backing. Real CPUs raise #GP, and WRMSR already reaches the same #GP via
-    // `wrmsr_safe`. Returning zero here is a detection oracle: a probe can tell
-    // this is a hypervisor by the successful RDMSR (and by the RDMSR/WRMSR
-    // asymmetry). Fault like bare metal instead. If a specific VMware backdoor
-    // MSR must be emulated, handle that exact MSR explicitly.
+    // Strict default: do not expose the outer hypervisor's MSR range.
+    #[cfg(not(feature = "hypervisor-msr"))]
     if is_hypervisor_msr(msr) {
         return Err(EmulationError::gp(0));
     }
 
+    // Hypervisor-reserved MSRs cannot be hidden from a Windows guest that
+    // already discovered the outer hypervisor at boot. The kdmapper failure
+    // was Windows executing RDMSR 0x4000_00f0 (and WRMSR 0x4000_00b0/B1);
+    // turning those into #GP produced 0x1E/0x3D with
+    // STATUS_PRIVILEGED_INSTRUCTION. With `hypervisor-msr` enabled, try the
+    // real MSR first, then fall back to a benign zero for this range.
     let mut exception_info = HostExceptionInfo::new();
     let msr_value = safe_routine::rdmsr_safe(&mut exception_info, msr);
 
-    // An unsupported MSR is #GP(0) on real hardware.
+    // An unsupported MSR is #GP(0) on real hardware. Hypervisor MSRs are the
+    // exception: a Windows guest may have been told about them by the outer
+    // hypervisor before noumen started, and cannot recover from this #GP.
     if exception_info.has_occurred {
+        if is_hypervisor_msr(msr) {
+            context.rax = 0;
+            context.rdx = 0;
+
+            return skip_instruction(context);
+        }
+
         return Err(EmulationError::gp(0));
     }
 
@@ -138,16 +149,23 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
         }
     }
 
-    // Mirror RDMSR: the hypervisor-reserved range has no real MSR, so fault
-    // instead of letting an outer hypervisor's implementation leak through.
+    // Strict default: reject hypervisor MSRs exactly like the CPUID hiding.
+    #[cfg(not(feature = "hypervisor-msr"))]
     if is_hypervisor_msr(msr) {
         return Err(EmulationError::gp(0));
     }
 
+    // With `hypervisor-msr`: pass through so an outer hypervisor can service
+    // synthetic timers. If it does not implement one, ignore the write rather
+    // than injecting #GP into a Windows guest that already uses this range.
     let mut exception_info = HostExceptionInfo::new();
     safe_routine::wrmsr_safe(&mut exception_info, msr, value);
 
     if exception_info.has_occurred {
+        if is_hypervisor_msr(msr) {
+            return skip_instruction(context);
+        }
+
         return Err(EmulationError::gp(0));
     }
 
@@ -173,8 +191,9 @@ pub(super) fn emulate_wrmsr(vcpu: &mut Vcpu, context: &mut GuestContext) -> Emul
     skip_instruction(context)
 }
 
-/// Hypervisor-reserved MSRs. Reads in this range are virtualized and never
-/// reach the host, and the guest must not observe a #GP from them.
+/// Hypervisor-reserved MSRs. Pass through when the outer hypervisor supports
+/// them; unsupported access is emulated as zero/ignored instead of #GP because
+/// a Windows guest may have learned about this range before noumen started.
 fn is_hypervisor_msr(msr: u32) -> bool {
     (0x4000_0000..=0x4000_00ff).contains(&msr)
 }

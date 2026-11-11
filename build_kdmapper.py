@@ -2,7 +2,8 @@
 """构建手动映射版 loader：hypervisor + loader/windows/kdmapper + uapp。
 
 这一版的驱动把 hypervisor 镜像编进 `noumen_data.h`，所以构建前会先把编译出的
-ELF 重新生成成 C 数组头文件（内容不变时不改写，避免无谓重编）。
+ELF 重新生成成 C 数组头文件；驱动编译结束后恢复原来的 `noumen_data.h`
+（成功、失败或中断都会恢复）。
 
 产物落到 `target/kdmapper/`：
 

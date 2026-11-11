@@ -28,6 +28,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools.file_to_c_array import format_c_array
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 HYPERVISOR_DIR = REPO_ROOT / "hypervisor"
@@ -35,7 +37,7 @@ LOADER_WINDOWS = REPO_ROOT / "loader" / "windows"
 PROBE_DIR = REPO_ROOT / "tools" / "rdtsc_probe"
 
 DEFAULT_FEATURES = ["panic-detail", "buffer-log", "vmx-ept", "svm-npt", "mem"]
-OPTIONAL_FEATURES = ["serial-console", "native-bp"]
+OPTIONAL_FEATURES = ["serial-console", "native-bp", "hypervisor-msr"]
 KNOWN_FEATURES = [*OPTIONAL_FEATURES, *DEFAULT_FEATURES]
 
 
@@ -177,6 +179,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="FEATURES",
         help="explicit hypervisor features, comma separated; disables the default set. "
         "Use --list-features to print every available name",
+    )
+    parser.add_argument(
+        "--hypervisor-msr",
+        action="store_true",
+        help="allow outer-hypervisor MSR passthrough (VMware compatibility; default off)",
     )
     parser.add_argument(
         "--list-features",
@@ -450,17 +457,7 @@ def write_embedded_image(image: Path, header: Path) -> bool:
 
     返回是否真的重写（没变时不更新时间戳，避免每次 msbuild 都重编驱动）。
     """
-    data = image.read_bytes()
-    lines = ["// array size is %d" % len(data), "static const unsigned char noumen_data[] = {"]
-
-    for offset in range(0, len(data), 16):
-        chunk = data[offset : offset + 16]
-        body = ", ".join(f"0x{byte:02x}" for byte in chunk)
-        separator = "," if offset + 16 < len(data) else ""
-        lines.append(f"  {body}{separator}")
-
-    lines.append("};")
-    text = "\n".join(lines) + "\n"
+    text = format_c_array(image.read_bytes(), "noumen_data")
 
     if header.is_file() and header.read_text(encoding="utf-8") == text:
         return False
@@ -495,48 +492,65 @@ def build_driver(
     if not project.is_file():
         raise BuildError(f"missing driver project: {project}")
 
-    if flavor.embedded_header is not None:
-        if image is None:
-            raise BuildError(
-                f"{flavor.name} needs the hypervisor image embedded, but none is available "
-                "(do not combine with --skip-hypervisor)"
-            )
-        header = flavor.driver_dir / flavor.embedded_header
-        if write_embedded_image(image, header):
+    embedded_header: Path | None = None
+    original_header: bytes | None = None
+    header_existed = False
+
+    try:
+        if flavor.embedded_header is not None:
+            if image is None:
+                raise BuildError(
+                    f"{flavor.name} needs the hypervisor image embedded, but none is available "
+                    "(do not combine with --skip-hypervisor)"
+                )
+            embedded_header = flavor.driver_dir / flavor.embedded_header
+            header_existed = embedded_header.is_file()
+            if header_existed:
+                original_header = embedded_header.read_bytes()
+
+            if write_embedded_image(image, embedded_header):
+                print(
+                    f"    embedded image updated: {embedded_header.name} <- {image.name} "
+                    f"({image.stat().st_size:,} B, temporary)"
+                )
+
+        msbuild = get_msbuild_path()
+        command = [
+            msbuild,
+            str(project),
+            f"/p:Configuration={configuration}",
+            f"/p:Platform={platform}",
+            "/m",
+            "/nologo",
+            "/v:minimal",
+        ]
+        result = subprocess.run(command, cwd=str(flavor.driver_dir), check=False)
+
+        driver = driver_artifact(flavor, configuration=configuration, platform=platform)
+
+        if result.returncode != 0:
+            if not driver.is_file():
+                raise BuildError(f"msbuild failed with exit code {result.returncode}.")
             print(
-                f"    embedded image updated: {header.name} <- {image.name} "
-                f"({image.stat().st_size:,} B)"
+                f"WARNING: msbuild reported exit {result.returncode} "
+                "(inf2cat/InfVerif); using the produced .sys."
             )
 
-    msbuild = get_msbuild_path()
-    command = [
-        msbuild,
-        str(project),
-        f"/p:Configuration={configuration}",
-        f"/p:Platform={platform}",
-        "/m",
-        "/nologo",
-        "/v:minimal",
-    ]
-    result = subprocess.run(command, cwd=str(flavor.driver_dir), check=False)
-
-    driver = driver_artifact(flavor, configuration=configuration, platform=platform)
-
-    if result.returncode != 0:
         if not driver.is_file():
-            raise BuildError(f"msbuild failed with exit code {result.returncode}.")
-        print(
-            f"WARNING: msbuild reported exit {result.returncode} "
-            "(inf2cat/InfVerif); using the produced .sys."
-        )
+            raise BuildError(
+                f"{flavor.driver_binary} was not produced under "
+                f"{flavor.driver_dir / 'build' / platform / configuration}."
+            )
 
-    if not driver.is_file():
-        raise BuildError(
-            f"{flavor.driver_binary} was not produced under "
-            f"{flavor.driver_dir / 'build' / platform / configuration}."
-        )
-
-    return driver
+        return driver
+    finally:
+        if embedded_header is not None:
+            if header_existed:
+                assert original_header is not None
+                embedded_header.write_bytes(original_header)
+            else:
+                embedded_header.unlink(missing_ok=True)
+            print(f"    embedded header restored: {embedded_header.name}")
 
 
 # ------------------------------------------------------------------------ uapp
@@ -738,6 +752,12 @@ def main(argv: list[str]) -> int:
 
     if no_serial:
         features = list(DEFAULT_FEATURES)
+
+    if args.hypervisor_msr:
+        if features is None:
+            features = list(DEFAULT_FEATURES)
+        if "hypervisor-msr" not in features:
+            features.append("hypervisor-msr")
 
     target_root = Path(args.target_dir) if args.target_dir else REPO_ROOT / "target"
     if not target_root.is_absolute():

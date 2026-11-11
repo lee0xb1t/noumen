@@ -48,7 +48,8 @@ cargo build --release --no-default-features
 ```powershell
 python build.py              # 两版都构建
 python build_deviceio.py     # 只构建 deviceio 版
-python build_kdmapper.py     # 只构建 kdmapper 版（顺带重生成 noumen_data.h）
+python build_kdmapper.py     # 只构建 kdmapper 版（临时生成 noumen_data.h，编译后恢复）
+python build_kdmapper.py --hypervisor-msr   # VMware/嵌套环境：透传外层 MSR
 python build.py --debug --skip-driver
 python build.py --no-serial
 ```
@@ -69,6 +70,14 @@ python build.py --clean-only        # 只清理（cargo target + MSBuild build �
 python build.py --flavor kdmapper   # 只构建一版
 python build.py --hypercall-key 0x2b3d   # nsvr 的默认 key（缺省 0x10F2C）
 ```
+
+文件转 C 数组：
+
+```powershell
+python tools/file_to_c_array.py input.bin -o output.h -n noumen_data
+```
+
+省略 `-o` 时输出到 stdout；kdmapper 构建内部也复用它生成临时的 `noumen_data.h`。
 
 `--no-serial` 用独立的 `hypervisor\target\no-serial`，不会覆盖带串口的镜像。
 
@@ -302,7 +311,7 @@ RIP 推进只能有一个所有者：
 - **vm_stop 前必须恢复全部 guest GPR**：`vm_stop` 只处理 RAX/RDX/RBP 的 iretq 帧；不要在恢复 RCX/RBX/…/R14 之前跳到 `vm_stop`。
 - **exit 同步代**：EPT 内存类型、EPT hook、HideSelf 的变更共用一个 `EXIT_SYNC_GENERATION`；慢路径入口只读一次，变化时才分别检查各子系统的 applied generation。
 - **skip_instruction 分层**：`advance_rip` 推进 RIP（含 4 GiB 边界的兼容模式截断）；`finish_instruction` 清 STI/MOV-SS shadow，TF=1 且 BTF=0 时置 pending BS，并把 DR7 使能的执行断点（匹配新 RIP）合并为 pending B0–B3 + enabled breakpoint。DR0–DR3 从 `GuestContext` 读，因为 C 运行期间硬件 DR 已被清零。
-- **CPUID**：所有 CPUID VM-exit 都走 `emulate_cpuid`（stub 不再有 fast path），但 handler 只执行原生 `cpuid` 并把结果原样写回，不做 leaf 过滤。leaf 1 的 VMX/hypervisor 位、leaf 7 的 CET、`0x4000_0000..` 的 hypervisor leaves 都按宿主原值返回；不存在的 leaf 由硬件按自身规则返回（Intel 通常返回最高 basic leaf 的数据），不是 noumen 清零。随后 `skip_instruction` 统一处理 RIP 回绕、interrupt shadow、TF/DR pending debug。
+- **CPUID**：CPUID 在 VMX 中必然产生 VM-exit，因此所有 CPUID exit 都走 `emulate_cpuid`；handler 执行原生 `cpuid` 后把四个结果寄存器原样写回，**不做任何 leaf 过滤**。VMX、hypervisor-present、`0x4000_0000..=0x4000_00ff` 的 hypervisor leaves 全部按宿主原值透传；不存在的 leaf 由硬件按自身规则返回（Intel 通常返回最高 basic leaf 的数据）。随后 `skip_instruction` 统一处理 RIP 回绕、interrupt shadow、TF/DR pending debug。
 - **INVPCID**：所有 INVPCID VM-exit 都走 C 的 `tlb::emulate_invpcid`，执行 `invvpid` 后由 `skip_instruction` 推进 RIP；没有 asm fast path。
 - **当前开启的 VMX 控制位**（其余为 0；`write_adjust()` 可能清掉 CPU/外层 VMM 不支持的位）：
   - pin-based：`virtual_nmi`、`nmi_exiting`（仅 `native-bp`；关闭时为 0）；
@@ -374,10 +383,10 @@ Free → InFlight → Active → Closing → Retired → Free
 - VMX 不自动保存 XCR0/CET。不开 "load CET state"/"load IA32_CET state" 时，VM exit 不保存 guest 的 `SSP`/`IA32_S_CET`，用户态 `ret` 会在影子栈上失配 → `#CP` → Windows 转成 `FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS`（`0xC0000409`）；critical process 因此退出 → `0xEF`；
 - 控制位：VM-entry bit 20 `load_cet_state`、VM-exit bit 28 `load_ia32_cet_state`；字段：guest `S_CET`/`SSP`/`INTR_SSP_TABLE` = `0x6828/0x682a/0x682c`，host 对应 `0x6c18/0x6c1a/0x6c1c`（`x86` crate 没有这些常量，定义在 `vmcs/guest.rs`、`vmcs/host.rs`）；
 - root 侧必须关闭 supervisor 影子栈：`HOST_S_CET = HOST_SSP = HOST_INTR_SSP_TABLE = 0`。否则 noumen 在 root 里的 `call`/`ret` 会消费 guest 的影子栈；
-- `configure_cet_state()` 只有在两个控制位**读回都生效**时才置 `cached.cet_virtualized`；否则 `emulate_cpuid` 对 leaf 7 清 `CET_SS`（7.0:ECX[7]）和 `CET_U`/`CET_S`（7.1:EAX[6:7]），让 Windows 不启用影子栈；
+- `configure_cet_state()` 只有在两个控制位**读回都生效**时才置 `cached.cet_virtualized`；CPUID 现在是裸透传，**不再根据该状态屏蔽 leaf 7 的 CET**。如果控制位不可用，guest 仍可能看到 CET 支持并启用影子栈，从而出现 `#CP`；
 - VMX 没有 `IA32_U_CET`/`IA32_PL0_SSP`/`IA32_PL1_SSP`/`IA32_PL2_SSP`/`IA32_PL3_SSP` 的 VMCS 字段，但 VM exit/entry 不会改动这些 MSR，所以**透传**（不拦截）；拦截它们会让 guest 每次 syscall 写 `PL3_SSP` 都产生 VM exit；
 - `#CP`（vector 21）进异常位图，原样注入回 guest；日志只保留限流后的 `Unhandled` 类记录，不再打印 CET 快照；
-- **只有加载时 CET 已经打开（`CR4.CET=1`）才接管/暴露 CET**：`cet_virtualized = cet_active_at_setup`，它同时是 `emulate_cpuid` 屏蔽 CET 的开关。加载后才打开 CET 时，已经在跑的线程没有影子栈条目，下一次 `ret` 就 `#CP`（`FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS`）；
+- **只有加载时 CET 已经打开（`CR4.CET=1`）才接管 CET**：`cet_virtualized = cet_active_at_setup`。CPUID 裸透传后，guest 是否启用 CET 由原始 leaf 7 决定；加载后才打开 CET 时，已经在跑的线程没有影子栈条目，下一次 `ret` 就 `#CP`（`FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS`）。
 - 开了 load-CET 后，guest 的 `IA32_S_CET`/`IA32_INTERRUPT_SSP_TABLE_ADDR` 每次 entry 都从 VMCS 字段加载，所以这两个 MSR 的 `WRMSR` 必须拦截（`setup_msr_bitmap`）并写字段，不能写真实 MSR；`RDMSR` 不拦截（entry 已把 MSR 装成字段值）；
 - `IA32_U_CET`/`IA32_PL0_SSP`/`IA32_PL3_SSP` 透传给 guest，root 不使用它们；
 - setup 时用 `RDSSPQ` 读当前 SSP，但只在真实 `CR4.CET=1` 时执行；CET 未开时 guest 字段写 0，下一次 exit 由硬件写入实际值；
