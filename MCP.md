@@ -194,6 +194,7 @@ noumen 已运行且当前 CPU 已虚拟化。`both` 会分别通过 MCP 和 REST
 ## 安全边界
 
 - 默认只监听 loopback，没有 TLS、认证或访问控制；不要暴露到不可信网络；
+- 使用前按 [README.md](README.md) 的“使用前注意”关闭 VBS、内存完整性/HVCI 和 Hyper-V；
 - key 错误、hypervisor 未运行或 CPU 未虚拟化时，`VMCALL` 会 `#UD` 并终止进程；
 - `--processor any` 只适合所有 CPU 都已虚拟化的多核模式；
 - MEM_* 缓冲区是普通进程内存，hypervisor 通过当前 CR3 读取；页面被换出时可能失败；

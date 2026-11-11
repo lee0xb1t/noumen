@@ -8,6 +8,13 @@ noumen 是一个 x86_64 上的轻量 Type-1 风格 hypervisor，使用 Rust `no_
 
 [screenshot1](./imgs/s1.png) [screenshot2](./imgs/s2.png)
 
+## 使用前注意
+
+noumen 需要独占 VT-x/AMD-V。使用前关闭 VBS、内存完整性（HVCI）、Hyper-V、WSL2、
+Windows Sandbox 等虚拟化功能；虚拟机内运行还需开启嵌套虚拟化。在“Windows 安全中心
+→ 设备安全性 → 内核隔离”关闭内存完整性，并关闭上述虚拟化功能后重启；重启后用
+`msinfo32` 确认 VBS 未启用。
+
 ## 能力
 
 - Intel VMX：VMCS、EPT、VPID、MSR bitmap、MTRR、EPT hook、EPT 原生断点、HideSelf；

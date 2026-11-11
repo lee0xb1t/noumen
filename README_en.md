@@ -8,6 +8,14 @@ The loader in this repository is a Windows kernel driver. It allocates nonpaged 
 
 [screenshot1](./imgs/s1.png) [screenshot2](./imgs/s2.png)
 
+## Before use
+
+Noumen needs exclusive VT-x/AMD-V. Disable VBS, Memory Integrity (HVCI), Hyper-V,
+WSL2, Windows Sandbox and similar virtualization features; enable nested
+virtualization when running inside a VM. Disable Memory Integrity in Windows
+Security, turn off those features, then reboot and confirm VBS is off with
+`msinfo32`.
+
 ## Capabilities
 
 - Intel VMX: VMCS, EPT, VPID, MSR bitmap, MTRR, EPT hooks, EPT native breakpoints, HideSelf;
