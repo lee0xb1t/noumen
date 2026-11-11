@@ -134,7 +134,7 @@ Command families:
 
 - `1..=4`: logging, ping, Stop;
 - `5..=7`, `9..=11`, `13..=22`, `0x100`: hooks, EPT native breakpoints, introspection;
-- `0x20..=0x24`: `MEM_*`;
+- `0x20..=0x26`: `MEM_*`, `SET_PHYS_MEMORY_RANGE`, `SET_SYSTEM_CR3`;
 - `0x30..=0x3a`: SVM-only;
 - `0x200..=0x206`: reserved (TSC virtualization removed), return `3`.
 

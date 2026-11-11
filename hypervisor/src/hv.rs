@@ -48,12 +48,29 @@ pub fn set_ept_1gb_pages(use_1gb: bool) {
 /// Loader-supplied VMCALL key; `0` disables hypercalls.
 pub static HYPERCALL_KEY: AtomicU64 = AtomicU64::new(0);
 
+/// Runtime system CR3. Initialized from `KernelArgs.system_cr3`; can be updated
+/// by the `SetSystemCr3` hypercall after the guest is already running.
+static SYSTEM_CR3: AtomicU64 = AtomicU64::new(0);
+
 pub fn set_hypercall_key(key: u64) {
     HYPERCALL_KEY.store(key, SeqCst);
 }
 
 pub fn hypercall_key() -> u64 {
     HYPERCALL_KEY.load(SeqCst)
+}
+
+pub fn set_system_cr3(cr3: u64) {
+    SYSTEM_CR3.store(cr3 & 0x000F_FFFF_FFFF_F000, SeqCst);
+}
+
+pub fn system_cr3() -> u64 {
+    let runtime = SYSTEM_CR3.load(SeqCst);
+    if runtime != 0 {
+        runtime
+    } else {
+        GLOBAL_ARGS.get().system_cr3 as u64
+    }
 }
 
 pub fn check_features() -> HvResult<()> {

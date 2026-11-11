@@ -23,6 +23,7 @@ extern "C" fn _start(args_ptr: *const kargs::KernelArgs, hypercall_key: u64) -> 
     };
     hv::GLOBAL_ARGS.init(args);
     hv::set_hypercall_key(hypercall_key);
+    hv::set_system_cr3(args.system_cr3 as u64);
 
     // 布局版本必须先校验：v1 与 v2 的字段语义不同，错位读会得到垃圾。
     // 这里只做纯参数检查，不访问 guest 内存，因此可以在 serial 初始化之前。

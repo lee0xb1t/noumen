@@ -300,7 +300,7 @@ RIP 推进只能有一个所有者：
 
 - `1..=4`：日志、ping、Stop；
 - `5..=7`、`9..=11`、`13..=22`、`0x100`：hook/EPT 原生断点/自省；SVM 没有 NPT 原生断点路径；`13..=22` 中的用户断点等待命令需要 `native-bp`，关闭时返回 `3`；
-- `0x20..=0x24`：`MEM_*`；
+- `0x20..=0x26`：`MEM_*`、`SET_PHYS_MEMORY_RANGE`、`SET_SYSTEM_CR3`；
 - `0x200..=0x206`：保留编号（选择性 TSC 已移除），VMX/SVM 都返回 `3`；
 - `0x30..=0x3a`：SVM 专属命令（VMX 返回 `3`）。
 
@@ -523,7 +523,13 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 - `0x21 MEM_BATCH`：guest 提供请求环，批量读/写/翻译；`R9 bit0` 为 dry-run；
 - `0x22 MEM_SCAN`：分段扫描 guest VA；
 - `0x23 MEM_MAP`：输出物理区间 `(start,size)`；
-- `0x24 MEM_STATS`：每 CPU 统计快照。
+- `0x24 MEM_STATS`：每 CPU 统计快照；
+- `0x25 SET_PHYS_MEMORY_RANGE`：`RDX` = `PHYSICAL_MEMORY_RANGE[]` 的内核 VA，`R8` = 条数；数组布局 `{ u64 start; u64 size; }`，以 `size == 0` 结束，hypervisor 在调用内复制到自己的缓存；
+- `0x26 SET_SYSTEM_CR3`：`RDX` = 新 CR3；返回 `0` 成功、`1` 无效；只接受 4 KiB 对齐的非零值。
+
+`0x25`/`0x26` 是全局状态，不是 per-CPU 状态，调用一次即可。kdmapper 的
+`CustomDriverEntry` 在逐核 `HideSelf` 循环之后调用它们：先用
+`MmGetPhysicalMemoryRanges()` 重新提供物理区间，再刷新 system CR3。
 
 规则：
 
@@ -533,7 +539,7 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 - CR3 低 12 位是 PCID，翻译前掩掉；
 - `MEM_BATCH` 失败条目返回 `MemError`，不要把整个环丢掉；
 - `MEM_SCAN` 的请求结构按值读入、按值写回，注意并发/TOCTOU；
-- `MemMap` 的区间表来自 `KernelArgs.phys_map_base`，数组以全 0 项结尾；
+- `MemMap` 的区间表默认来自 `KernelArgs.phys_map_base`，也可由 `0x25` 替换；数组以全 0 项结尾；
 - 统计按 CPU 分槽，槽数取在线 CPU 数。
 
 ## 13. 日志与 panic
@@ -728,6 +734,8 @@ CopyExecOnly --数据 violation--> RealDataOnly（不推进 RIP，重试）
 | `MEM_QUERY` | `RAX=1,RDX=126,R8=516096` | 常量 |
 | `MEM_BATCH` | 条目 status 正确、载荷写入环 | CR3、翻译 |
 | `MEM_MAP` | 物理区间 | range_total |
+| `SET_PHYS_MEMORY_RANGE(0x25)` | 复制成功，`MEM_MAP` 返回新区间 | 数组布局、system CR3 |
+| `SET_SYSTEM_CR3(0x26)` | 返回 0，后续翻译使用新 CR3 | 4 KiB 对齐、非零 |
 | `MEM_SCAN` | 分段 cursor/done/status 正确 | 200 B 请求布局 |
 | 多核 hook | 迁移后仍命中，事件 cpu 正确 | generation、sync |
 | 每核 ASID | 不同且非 0 | setup 的 NASID 检查 |

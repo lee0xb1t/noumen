@@ -28,6 +28,13 @@
 //! | 20 | `HOOK_APPLY` | 让当前核应用最新一代 hook 状态 | - | - | - | `0` |
 //! | 21 | `USER_BREAKPOINT_COMMIT` | 所有核切到 clean 视图后写入 `0xCC` | VA | - | - | `0` 或 `HookError` |
 //! | 22 | `HOOK_RETIRED` | 所有在线 vCPU 是否已 retire 当前代 | - | - | - | `1`/`0` |
+//! | 0x20 | `MEM_QUERY` | 查询内存服务 ABI | - | - | - | ABI 版本（`RDX`/`R8`/`R9` 能力） |
+//! | 0x21 | `MEM_BATCH` | 批量内存操作环 | 环 VA | 环大小 | dry-run | 处理条数 |
+//! | 0x22 | `MEM_SCAN` | 分段扫描 | 请求 VA | 请求大小 | - | 状态 |
+//! | 0x23 | `MEM_MAP` | 复制物理区间表 | 目标 VA | 容量 | - | 写入条数（`RDX`=总数） |
+//! | 0x24 | `MEM_STATS` | 复制每 CPU 统计 | 目标 VA | 容量 | - | 写入条数 |
+//! | 0x25 | `SET_PHYS_MEMORY_RANGE` | 替换物理区间缓存 | 区间数组 VA | 条数 | - | 复制条数 |
+//! | 0x26 | `SET_SYSTEM_CR3` | 替换 system CR3 | CR3 | - | - | `0` 成功 / `1` 无效 |
 //! | 0x100 | `HOOK_HIT` | 内部：detour stub 上报命中 | hook id | 参数 | - | `0` |
 //!
 //! 未知 key -> `#UD`；未知命令：VMX 注入 `#UD`，SVM 返回 `RAX = 3`。flush 失败会注入 `#PF`/`#GP` 且不改动环形缓冲区，
@@ -103,6 +110,10 @@ pub enum Hypercall {
     MemMap = 0x23,
     /// 每 CPU 统计。
     MemStats = 0x24,
+    /// 替换 hypervisor 使用的物理内存区间表。
+    SetPhysMemoryRange = 0x25,
+    /// 替换 hypervisor 使用的 system CR3。
+    SetSystemCr3 = 0x26,
     /// SVM：带显式 method 安装 hook。
     SvmHookInstall = 0x30,
     /// SVM：按 VA 移除 hook。
@@ -163,6 +174,8 @@ impl Hypercall {
             0x22 => Self::MemScan,
             0x23 => Self::MemMap,
             0x24 => Self::MemStats,
+            0x25 => Self::SetPhysMemoryRange,
+            0x26 => Self::SetSystemCr3,
             0x30 => Self::SvmHookInstall,
             0x31 => Self::SvmHookRemove,
             0x32 => Self::SvmTfStep,

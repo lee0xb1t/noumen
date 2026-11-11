@@ -13,6 +13,8 @@
 #define NOUMEN_HYPERCALL_HOOK_RETIRED 22ULL
 #define NOUMEN_HYPERCALL_PONG_MAGIC   0x504F4E47UL
 #define NOUMEN_HYPERCALL_HIDE_SELF    9ULL
+#define NOUMEN_HYPERCALL_SET_PHYS_MEMORY_RANGE 0x25ULL
+#define NOUMEN_HYPERCALL_SET_SYSTEM_CR3        0x26ULL
 
 //
 // SVM-only (NPT) debug methods; ids deliberately distinct from the VMX hook
@@ -174,4 +176,20 @@ NoumenHypercallUserBreakpointCommit(
 UINT64
 NoumenHypercallHideSelf(
     _In_ UINT64 Key
+);
+
+// 用 `PHYSICAL_MEMORY_RANGE[]` 替换 hypervisor 的物理区间缓存，返回复制的
+// 区间数。数组布局为 { u64 start; u64 size; }，以 size == 0 结束。
+UINT64
+NoumenHypercallSetPhysMemoryRange(
+    _In_ UINT64 Key,
+    _In_ UINT64 Base,
+    _In_ UINT64 Count
+);
+
+// 更新 hypervisor 使用的 system CR3；返回 0 成功，1 表示 CR3 无效。
+UINT64
+NoumenHypercallSetSystemCr3(
+    _In_ UINT64 Key,
+    _In_ UINT64 Cr3
 );

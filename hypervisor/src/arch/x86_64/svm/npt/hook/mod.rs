@@ -1116,7 +1116,7 @@ pub fn handle_bp(svm: &mut SvmVcpu, ctx: &mut GuestContext) -> bool {
                         "SVM user bp: no ETHREAD (gs={:#x} kernel_gs={:#x} system_cr3={:#x}); single-step",
                         svm.vmcb.save.gs.base,
                         svm.vmcb.save.kernel_gs_base,
-                        crate::hv::GLOBAL_ARGS.get().system_cr3
+                        crate::hv::system_cr3()
                     );
                 }
             }
@@ -1417,7 +1417,7 @@ fn current_guest_thread(svm: &SvmVcpu) -> Option<u64> {
         return None;
     }
 
-    let system_cr3 = crate::hv::GLOBAL_ARGS.get().system_cr3 as u64;
+    let system_cr3 = crate::hv::system_cr3();
     let thread = read_guest_u64(system_cr3, kpcr + KPCR_CURRENT_THREAD_OFFSET)?;
 
     if thread == 0 || (thread >> 47) & 1 == 0 {

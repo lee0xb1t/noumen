@@ -96,6 +96,20 @@ pub fn dispatch(
         Hypercall::MemMap => mem::map(context),
         #[cfg(all(feature = "mem", feature = "vmx-ept"))]
         Hypercall::MemStats => mem::stats(context),
+        #[cfg(all(feature = "mem", feature = "vmx-ept"))]
+        Hypercall::SetPhysMemoryRange => mem::set_phys_range(context),
+        Hypercall::SetSystemCr3 => {
+            let cr3 = context.rdx & 0x000F_FFFF_FFFF_F000;
+
+            if cr3 == 0 {
+                context.rax = 1;
+            } else {
+                crate::hv::set_system_cr3(cr3);
+                context.rax = 0;
+            }
+
+            Ok(())
+        }
         // 选择性 TSC 已移除：编号保留，返回“不支持”，避免旧 loader/uapp 的
         // TSC 面板调用时收到 #UD。
         Hypercall::TscSetTargetPid
@@ -131,7 +145,8 @@ pub fn dispatch(
         | Hypercall::MemBatch
         | Hypercall::MemScan
         | Hypercall::MemMap
-        | Hypercall::MemStats => {
+        | Hypercall::MemStats
+        | Hypercall::SetPhysMemoryRange => {
             context.rax = 3;
             Ok(())
         }
@@ -141,7 +156,8 @@ pub fn dispatch(
         | Hypercall::MemBatch
         | Hypercall::MemScan
         | Hypercall::MemMap
-        | Hypercall::MemStats => {
+        | Hypercall::MemStats
+        | Hypercall::SetPhysMemoryRange => {
             context.rax = 3;
             Ok(())
         }

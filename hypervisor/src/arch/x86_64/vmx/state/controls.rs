@@ -261,7 +261,7 @@ impl VmxVcpu {
 
     fn configure_address_space(&mut self) -> HvResult<()> {
         // cr3 target 只在 `cr3_load_exiting` 打开时才有意义。
-        let system_cr3 = hv::GLOBAL_ARGS.get().system_cr3;
+        let system_cr3 = hv::system_cr3();
         let mut cr3_target = control::Cr3Target::new();
         cr3_target.add(system_cr3 as u64);
         if let Err(e) = cr3_target.write() {

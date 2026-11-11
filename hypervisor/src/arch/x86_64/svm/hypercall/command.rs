@@ -48,7 +48,18 @@ pub(super) fn dispatch(vcpu: &mut Vcpu, ctx: &mut GuestContext, command: Hyperca
         | Hypercall::MemBatch
         | Hypercall::MemMap
         | Hypercall::MemStats
-        | Hypercall::MemScan => mem::dispatch(svm, ctx, command),
+        | Hypercall::MemScan
+        | Hypercall::SetPhysMemoryRange => mem::dispatch(svm, ctx, command),
+        Hypercall::SetSystemCr3 => {
+            let cr3 = ctx.rdx & 0x000F_FFFF_FFFF_F000;
+
+            if cr3 == 0 {
+                ctx.rax = 1;
+            } else {
+                crate::hv::set_system_cr3(cr3);
+                ctx.rax = 0;
+            }
+        }
         #[cfg(feature = "buffer-log")]
         Hypercall::LoggerInfo => diag::logger_info(ctx),
         #[cfg(feature = "buffer-log")]

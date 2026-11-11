@@ -144,3 +144,22 @@ NoumenHypercallHideSelf(
 ) {
     return noumen_vmcall(Key, NOUMEN_HYPERCALL_HIDE_SELF, 0, 0);
 }
+
+UINT64
+NoumenHypercallSetPhysMemoryRange(
+    _In_ UINT64 Key,
+    _In_ UINT64 Base,
+    _In_ UINT64 Count
+    )
+{
+    return noumen_vmcall(Key, NOUMEN_HYPERCALL_SET_PHYS_MEMORY_RANGE, Base, Count);
+}
+
+UINT64
+NoumenHypercallSetSystemCr3(
+    _In_ UINT64 Key,
+    _In_ UINT64 Cr3
+    )
+{
+    return noumen_vmcall(Key, NOUMEN_HYPERCALL_SET_SYSTEM_CR3, Cr3, 0);
+}

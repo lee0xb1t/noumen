@@ -36,6 +36,9 @@ pub(super) fn dispatch(svm: &SvmVcpu, ctx: &mut GuestContext, command: Hypercall
                 svm.cpu_id as usize,
             );
         }
+        Hypercall::SetPhysMemoryRange => {
+            ctx.rax = mem::set_ranges(crate::hv::system_cr3(), ctx.rdx, ctx.r8 as u32) as u64;
+        }
         _ => ctx.rax = 3,
     }
 }

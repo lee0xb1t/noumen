@@ -132,6 +132,24 @@ pub(super) fn map(context: &mut GuestContext) -> EmulationResult<()> {
 }
 
 #[cfg(all(feature = "mem", feature = "vmx-ept"))]
+pub(super) fn set_phys_range(context: &mut GuestContext) -> EmulationResult<()> {
+    use crate::arch::x86_64::vmx::ept::mem;
+
+    if !mem::available() {
+        context.rax = mem::MemError::Unsupported.as_u64();
+        return Ok(());
+    }
+
+    context.rax = mem::phys::set_ranges(
+        crate::hv::system_cr3(),
+        context.rdx,
+        context.r8 as u32,
+    ) as u64;
+
+    Ok(())
+}
+
+#[cfg(all(feature = "mem", feature = "vmx-ept"))]
 pub(super) fn stats(context: &mut GuestContext) -> EmulationResult<()> {
     use crate::arch::x86_64::vmx::ept::mem;
 

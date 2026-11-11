@@ -71,7 +71,7 @@ fn ensure_loaded(map: &mut PhysMap) {
         return;
     }
 
-    let cr3 = args.system_cr3 as u64;
+    let cr3 = crate::hv::system_cr3();
 
     for index in 0..count as usize {
         let offset = match (index as u64).checked_mul(size_of::<PhysRange>() as u64) {
@@ -99,6 +99,54 @@ fn ensure_loaded(map: &mut PhysMap) {
         map.entries[map.count as usize] = PhysRange { start, size };
         map.count += 1;
     }
+}
+
+/// Replace the physical-range cache from a guest `PHYSICAL_MEMORY_RANGE[]`.
+///
+/// `base` is a kernel VA translated through `cr3`; the array uses the Windows
+/// layout `{ u64 start; u64 size; }` and is terminated by `size == 0`.
+/// The hypervisor copies the entries into its own static cache before the
+/// hypercall returns, so the driver may free the source buffer immediately.
+pub fn set_ranges(cr3: u64, base: u64, count: u32) -> u32 {
+    let mut map = PHYS_MAP.lock();
+
+    map.loaded = true;
+    map.count = 0;
+
+    if count == 0 || base == 0 {
+        return 0;
+    }
+
+    let count = count.min(MAX_PHYS_RANGES);
+
+    for index in 0..count as usize {
+        let offset = match (index as u64).checked_mul(size_of::<PhysRange>() as u64) {
+            Some(offset) => offset,
+            None => break,
+        };
+        let va = match base.checked_add(offset) {
+            Some(va) => va,
+            None => break,
+        };
+
+        let mut raw = [0u8; size_of::<PhysRange>()];
+        if super::virt::read(cr3, va, &mut raw).is_err() {
+            break;
+        }
+
+        let start = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+        let size = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+
+        if size == 0 {
+            break;
+        }
+
+        let index = map.count as usize;
+        map.entries[index] = PhysRange { start, size };
+        map.count += 1;
+    }
+
+    map.count
 }
 
 /// 把一个 GPA 区间映射进宿主可访问的窗口；越界返回 `OutOfMap`。

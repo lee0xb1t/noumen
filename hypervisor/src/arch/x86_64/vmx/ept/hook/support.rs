@@ -295,7 +295,7 @@ pub(crate) fn current_guest_thread() -> Option<u64> {
         return None;
     }
 
-    let system_cr3 = crate::hv::GLOBAL_ARGS.get().system_cr3 as u64;
+    let system_cr3 = crate::hv::system_cr3();
     let thread = read_guest_u64(system_cr3, kpcr + KPCR_CURRENT_THREAD_OFFSET)?;
 
     // 同一个 sanity check：线程对象也在内核高半区。
