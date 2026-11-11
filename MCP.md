@@ -168,10 +168,11 @@ REST 和 MCP 共用 `operations.rs` 的同一套 handler，不存在两套行为
 ## 测试工具
 
 `tools/test_mcp_server` 是 Rust 工具；kdmapper 构建会一并暂存为
-`target/kdmapper/test_mcp_server.exe`。默认不执行 VMCALL：
+`target/kdmapper/test_mcp_server.exe`。默认会通过 **MCP `tools/call`** 实际执行
+一次 `ping`，并校验 `ok == true`、`reply == expected`：
 
 ```powershell
-# 连接已有服务
+# 连接已有服务并执行真实 ping
 .\target\kdmapper\test_mcp_server.exe --url http://127.0.0.1:8000
 
 # 或自动启动 mcp-server.exe（随机本地端口）
@@ -181,15 +182,44 @@ REST 和 MCP 共用 `operations.rs` 的同一套 handler，不存在两套行为
 检查 `/health`、`/api`、`/help`、MCP `initialize`、MCP `tools/list`，并确认 REST
 操作与 MCP 工具名称、方法、路径一致，且没有 `hypercall`/`command` 接口。
 
-需要实际调用一个操作时：
+`/health`、`/api`、`/help` 和 `tools/list` 只是服务/协议发现，不执行 VMCALL；
+它们的 HTTP 200 只证明 HTTP/MCP 层正常。真正的 hypercall 验证来自默认的
+`ping`，或显式 `--call`。
+
+没有加载 hypervisor 时使用 `--structure-only`，它会跳过 VMCALL：
 
 ```powershell
-.\target\kdmapper\test_mcp_server.exe --url http://127.0.0.1:8000 `
-  --call ping --arg nonce=0x1234 --transport both
+.\target\kdmapper\test_mcp_server.exe --exe .\target\kdmapper\mcp-server.exe `
+  --structure-only
 ```
 
-`--transport` 可选 `mcp`、`rest`、`both`；执行 `--call` 会真正发 VMCALL，要求
-noumen 已运行且当前 CPU 已虚拟化。`both` 会分别通过 MCP 和 REST 各执行一次。
+自定义操作和传输方式：
+
+```powershell
+.\target\kdmapper\test_mcp_server.exe --exe .\target\kdmapper\mcp-server.exe `
+  --call ping --arg nonce=0x1234 --transport both --verbose
+```
+
+`--transport` 可选 `mcp`、`rest`、`both`；`both` 会分别通过 MCP 和 REST 各执行
+一次。工具在调用后校验 `ok`，内存操作则校验 `status == 0`，失败会打印 `FAIL`。
+
+所有 HTTP 请求、响应和检查结果都会写入 `test_mcp_server.log`；可用 `--log`
+指定其他路径：
+
+```powershell
+.\target\kdmapper\test_mcp_server.exe --exe .\target\kdmapper\mcp-server.exe `
+  --log .\mcp-test.log
+```
+
+加 `--verbose`（或 `-v`）时，同一份完整 JSON 也会打印到控制台，包括
+`/api` 操作字段、`/help` 的 `inputSchema`、MCP `tools/list` 的完整工具结构，
+以及 `--call` 的 `structuredContent` 返回值：
+
+```powershell
+.\target\kdmapper\test_mcp_server.exe --exe .\target\kdmapper\mcp-server.exe --verbose
+```
+
+执行真实调用前需 noumen 已加载且当前 CPU 已虚拟化；否则会 `#UD` 并终止服务进程。
 
 ## 安全边界
 

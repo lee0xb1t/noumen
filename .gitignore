@@ -6,3 +6,4 @@ __pycache__/
 *.dmp
 dumps
 dmp/
+test_mcp_server.log

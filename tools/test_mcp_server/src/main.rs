@@ -1,12 +1,17 @@
 //! Smoke-test a running (or freshly launched) noumen MCP/REST server.
 //!
-//! Without `--call` this tool never executes a hypercall. It validates
-//! /health, /api, /help, MCP initialize/tools/list and the named operation
-//! mapping shared by REST and MCP.
+//! The default run executes one real `ping` hypercall through MCP and verifies
+//! its `ok`/`reply` result. It also validates /health, /api, /help, MCP
+//! initialize/tools/list and the named operation mapping shared by REST and MCP.
+//! Use `--structure-only` to skip VMCALL and check only the HTTP/MCP structure.
+//! Every request/response is written to `test_mcp_server.log` (override with
+//! `--log`).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufWriter, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -41,6 +46,9 @@ struct Options {
     call: Option<String>,
     args: Vec<String>,
     transport: Transport,
+    verbose: bool,
+    log: String,
+    structure_only: bool,
 }
 
 impl Options {
@@ -53,12 +61,20 @@ impl Options {
             call: None,
             args: Vec::new(),
             transport: Transport::Mcp,
+            verbose: false,
+            log: "test_mcp_server.log".to_owned(),
+            structure_only: false,
         };
         let mut explicit_url = false;
 
         let mut args = env::args().skip(1);
         while let Some(argument) = args.next() {
             match argument.as_str() {
+                "--verbose" | "-v" => options.verbose = true,
+                "--structure-only" => options.structure_only = true,
+                "--log" => {
+                    options.log = args.next().ok_or("--log requires a path")?;
+                }
                 "--url" => {
                     options.url = args.next().ok_or("--url requires a value")?;
                     explicit_url = true;
@@ -103,6 +119,10 @@ impl Options {
 
         if explicit_url && options.exe.is_some() {
             return Err("--url and --exe are mutually exclusive".to_owned());
+        }
+
+        if options.structure_only && (options.call.is_some() || !options.args.is_empty()) {
+            return Err("--structure-only cannot be combined with --call/--arg".to_owned());
         }
 
         Ok(Some(options))
@@ -150,7 +170,11 @@ fn run(options: Options) -> Result<()> {
     };
 
     let result = (|| {
-        let client = Client::new(&base_url, options.timeout)?;
+        let client = Client::new(&base_url, options.timeout, options.verbose, &options.log)?;
+        client.log(&format!(
+            "test_mcp_server base={base_url} verbose={} log={}",
+            options.verbose, options.log
+        ));
         wait_health(&client, options.timeout)?;
 
         let health_operations = check_health(&client)?;
@@ -162,14 +186,21 @@ fn run(options: Options) -> Result<()> {
         check_help(&client, &api)?;
         check_mcp(&client, &api)?;
 
-        if let Some(name) = &options.call {
-            let arguments = parse_arguments(&options.args)?;
-            call_operation(&client, &api, name, &arguments, options.transport)?;
+        if options.structure_only {
+            client.report("SKIP  --structure-only: only API/MCP structure was checked; no VMCALL.");
         } else {
-            println!("SKIP  no --call: hypercall was not executed");
+            let (name, arguments) = match &options.call {
+                Some(name) => (name.clone(), parse_arguments(&options.args)?),
+                None => (
+                    "ping".to_owned(),
+                    BTreeMap::from([("nonce".to_owned(), "0x1234".to_owned())]),
+                ),
+            };
+
+            call_operation(&client, &api, &name, &arguments, options.transport)?;
         }
 
-        println!("OK");
+        client.report("OK");
         Ok(())
     })();
 
@@ -196,10 +227,12 @@ struct Client {
     host: String,
     port: u16,
     timeout: Duration,
+    verbose: bool,
+    log: RefCell<BufWriter<File>>,
 }
 
 impl Client {
-    fn new(base_url: &str, timeout: Duration) -> Result<Self> {
+    fn new(base_url: &str, timeout: Duration, verbose: bool, log_path: &str) -> Result<Self> {
         let rest = base_url
             .strip_prefix("http://")
             .ok_or_else(|| format!("only http:// URLs are supported: {base_url}"))?;
@@ -210,12 +243,34 @@ impl Client {
         let port = port
             .parse()
             .map_err(|error| format!("invalid port in {base_url}: {error}"))?;
+        let file = File::create(log_path)
+            .map_err(|error| format!("could not create log {log_path}: {error}"))?;
 
         Ok(Self {
             host: host.to_owned(),
             port,
             timeout,
+            verbose,
+            log: RefCell::new(BufWriter::new(file)),
         })
+    }
+
+    fn log(&self, text: &str) {
+        let mut log = self.log.borrow_mut();
+        let _ = writeln!(log, "{text}");
+        let _ = log.flush();
+    }
+
+    fn check(&self, label: &str) {
+        self.log(&format!("CHECK {label}"));
+        if self.verbose {
+            println!("CHECK {label}");
+        }
+    }
+
+    fn report(&self, message: &str) {
+        println!("{message}");
+        self.log(message);
     }
 
     fn request(
@@ -244,6 +299,19 @@ impl Client {
             .transpose()
             .map_err(|error| format!("could not encode request body: {error}"))?
             .unwrap_or_default();
+
+        if self.verbose {
+            println!("REQ   {method} {target}");
+        }
+        self.log(&format!("REQ   {method} {target}"));
+        if let Some(payload) = payload {
+            let pretty = pretty_json(payload);
+            self.log(&format!("      params:\n{pretty}"));
+            if self.verbose {
+                println!("      params:");
+                print_indented("      ", &pretty);
+            }
+        }
 
         let mut request = format!(
             "{method} {target} HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n",
@@ -275,7 +343,23 @@ impl Client {
             .read_to_end(&mut response)
             .map_err(|error| format!("read response: {error}"))?;
 
-        parse_response(&response)
+        let parsed = parse_response(&response)?;
+
+        let response_log = match &parsed.1 {
+            Some(body) => format!("RESP  {}\n{}", parsed.0, pretty_json(body)),
+            None => format!("RESP  {}", parsed.0),
+        };
+        self.log(&response_log);
+
+        if self.verbose {
+            println!("RESP  {}", parsed.0);
+            if let Some(body) = &parsed.1 {
+                println!("      body:");
+                print_indented("      ", &pretty_json(body));
+            }
+        }
+
+        Ok(parsed)
     }
 
     fn mcp(&self, method: &str, params: Option<Value>, notification: bool) -> Result<Value> {
@@ -295,6 +379,16 @@ impl Client {
         }
 
         body.ok_or_else(|| format!("MCP {method}: empty response"))
+    }
+}
+
+fn pretty_json(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| format!("{value:?}"))
+}
+
+fn print_indented(indent: &str, text: &str) {
+    for line in text.lines() {
+        println!("{indent}{line}");
     }
 }
 
@@ -338,6 +432,8 @@ fn percent_encode(value: &str) -> String {
 }
 
 fn check_health(client: &Client) -> Result<BTreeSet<String>> {
+    client.check("/health (no VMCALL)");
+
     let (status, body) = client.request("GET", "/health", None, &[])?;
     if status != 200 {
         return Err(format!("GET /health: HTTP {status}"));
@@ -363,7 +459,7 @@ fn check_health(client: &Client) -> Result<BTreeSet<String>> {
         );
     }
 
-    println!("PASS  /health: {} operations", names.len());
+    client.report(&format!("PASS  /health: {} operations", names.len()));
     Ok(names)
 }
 
@@ -374,6 +470,8 @@ struct Operation {
 }
 
 fn fetch_api(client: &Client) -> Result<BTreeMap<String, Operation>> {
+    client.check("/api (discovery only; no VMCALL)");
+
     let (status, body) = client.request("GET", "/api", None, &[])?;
     if status != 200 {
         return Err(format!("GET /api: HTTP {status}"));
@@ -412,11 +510,13 @@ fn fetch_api(client: &Client) -> Result<BTreeMap<String, Operation>> {
         return Err("GET /api: no operations".to_owned());
     }
 
-    println!("PASS  /api: {} named operations", result.len());
+    client.report(&format!("PASS  /api: {} named operations", result.len()));
     Ok(result)
 }
 
 fn check_help(client: &Client, api: &BTreeMap<String, Operation>) -> Result<()> {
+    client.check("/help (discovery only; no VMCALL)");
+
     let (status, body) = client.request("GET", "/help", None, &[])?;
     if status != 200 {
         return Err(format!("GET /help: HTTP {status}"));
@@ -479,11 +579,13 @@ fn check_help(client: &Client, api: &BTreeMap<String, Operation>) -> Result<()> 
         return Err("GET /help: MCP tools differ from REST operations".to_owned());
     }
 
-    println!("PASS  /help: REST and MCP operations match");
+    client.report("PASS  /help: REST and MCP operations match");
     Ok(())
 }
 
 fn check_mcp(client: &Client, api: &BTreeMap<String, Operation>) -> Result<()> {
+    client.check("MCP initialize / notifications / tools/list");
+
     let initialized = client.mcp(
         "initialize",
         Some(json!({
@@ -509,7 +611,7 @@ fn check_mcp(client: &Client, api: &BTreeMap<String, Operation>) -> Result<()> {
     {
         return Err("MCP initialize: missing serverInfo".to_owned());
     }
-    println!("PASS  MCP initialize: {protocol}");
+    client.report(&format!("PASS  MCP initialize: {protocol}"));
 
     let (status, _) = client.request(
         "POST",
@@ -523,7 +625,7 @@ fn check_mcp(client: &Client, api: &BTreeMap<String, Operation>) -> Result<()> {
     if status != 202 {
         return Err(format!("MCP notifications/initialized: HTTP {status}"));
     }
-    println!("PASS  MCP notifications/initialized");
+    client.report("PASS  MCP notifications/initialized");
 
     let listed = client.mcp("tools/list", Some(json!({})), false)?;
     let tools = listed
@@ -570,7 +672,10 @@ fn check_mcp(client: &Client, api: &BTreeMap<String, Operation>) -> Result<()> {
         return Err("MCP tools/list: tool set differs from /api".to_owned());
     }
 
-    println!("PASS  MCP tools/list: {} named tools", names.len());
+    client.report(&format!(
+        "PASS  MCP tools/list: {} named tools",
+        names.len()
+    ));
     Ok(())
 }
 
@@ -598,6 +703,36 @@ fn parse_arguments(values: &[String]) -> Result<BTreeMap<String, String>> {
     Ok(arguments)
 }
 
+fn check_operation_result(name: &str, value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{name}: result is not an object"))?;
+
+    if object.get("ok").and_then(Value::as_bool) == Some(false) {
+        return Err(format!("{name}: result has ok=false"));
+    }
+
+    if let Some(status) = object.get("status").and_then(Value::as_u64)
+        && status != 0
+    {
+        let status_name = object
+            .get("status_name")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        return Err(format!("{name}: status={status} ({status_name})"));
+    }
+
+    if name == "ping" {
+        match object.get("ok").and_then(Value::as_bool) {
+            Some(true) => {}
+            Some(false) => return Err("ping: ok=false".to_owned()),
+            None => return Err("ping: response has no ok field".to_owned()),
+        }
+    }
+
+    Ok(())
+}
+
 fn call_operation(
     client: &Client,
     api: &BTreeMap<String, Operation>,
@@ -608,6 +743,15 @@ fn call_operation(
     let operation = api
         .get(name)
         .ok_or_else(|| format!("unknown operation: {name}"))?;
+
+    let transport_name = match transport {
+        Transport::Mcp => "mcp",
+        Transport::Rest => "rest",
+        Transport::Both => "both",
+    };
+    client.check(&format!(
+        "call {name} transport={transport_name} args={arguments:?}"
+    ));
 
     if transport == Transport::Mcp || transport == Transport::Both {
         let response = client.mcp(
@@ -626,7 +770,11 @@ fn call_operation(
         if result.get("isError").and_then(Value::as_bool) == Some(true) {
             return Err(format!("MCP tools/call: {name} returned isError"));
         }
-        println!("PASS  MCP tools/call: {name}");
+        let structured = result
+            .get("structuredContent")
+            .ok_or_else(|| format!("MCP tools/call: {name} missing structuredContent"))?;
+        check_operation_result(name, structured)?;
+        client.report(&format!("PASS  MCP tools/call: {name}"));
     }
 
     if transport == Transport::Rest || transport == Transport::Both {
@@ -648,10 +796,12 @@ fn call_operation(
         if status != 200 {
             return Err(format!("REST {name}: HTTP {status}: {body:?}"));
         }
-        if !body.map(|value| value.is_object()).unwrap_or(false) {
-            return Err(format!("REST {name}: body is not an object"));
-        }
-        println!("PASS  REST {} {}: {name}", operation.method, operation.path);
+        let body = body.ok_or_else(|| format!("REST {name}: empty body"))?;
+        check_operation_result(name, &body)?;
+        client.report(&format!(
+            "PASS  REST {} {}: {name}",
+            operation.method, operation.path
+        ));
     }
 
     Ok(())
@@ -684,13 +834,17 @@ Options:
   --exe <path>            launch mcp-server.exe on a free local port
   --server-arg <arg>      extra argument for --exe; repeatable
   --timeout <seconds>     HTTP/startup timeout (default 5)
-  --call <operation>      invoke one named operation
+  --call <operation>      invoke one operation (default ping)
   --arg <key=value>       argument for --call; repeatable
   --transport <mcp|rest|both>
-                          transport for --call (default mcp)
+                          transport for the call (default mcp)
+  --structure-only        skip VMCALL and only check HTTP/MCP structure
+  -v, --verbose           print every request, response and JSON structure
+  --log <path>            write all request/response output (default test_mcp_server.log)
   -h, --help              show this help
 
-Without --call this tool never executes VMCALL.
+The default run executes a real ping hypercall through MCP. Use
+--structure-only when no hypervisor is loaded (it will not execute VMCALL).
 "#
     );
 }
