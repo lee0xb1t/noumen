@@ -61,7 +61,7 @@ python build.py --no-serial
 ```text
 hypervisor\target\x86_64-unknown-none\<profile>\noumen   # hypervisor 镜像
 target\deviceio\noumen, noumen_loader.sys, uapp.exe      # 暂存目录
-target\kdmapper\noumen, noumen_kdmapper.sys, nsvr.exe
+target\kdmapper\noumen, noumen_kdmapper.sys, nsvr.exe, mcp-server.exe, test_mcp_server.exe
 ```
 
 常用参数：
@@ -80,6 +80,8 @@ python tools/file_to_c_array.py input.bin -o output.h -n noumen_data
 ```
 
 省略 `-o` 时输出到 stdout；kdmapper 构建内部也复用它生成临时的 `noumen_data.h`。
+
+kdmapper 构建还会生成 `mcp-server.exe`，它把 hypercall 暴露成具名 REST 资源和同名 MCP 工具；完整说明见 [MCP.md](MCP.md)。
 
 `--no-serial` 用独立的 `hypervisor\target\no-serial`，不会覆盖带串口的镜像。
 
@@ -159,6 +161,8 @@ src/
     tsc.rs                TSC 频率探测
     serial.rs             COM1/no-op 串口
 ```
+
+`loader/windows/um/mcp-server/` 是独立的 hypercall-only MCP HTTP 服务，不属于 hypervisor crate；由 kdmapper 构建一起暂存。
 
 ### VMX 代码
 
@@ -549,7 +553,7 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 1. **工具链已固定**：`hypervisor/rust-toolchain.toml` 指定 `nightly-x86_64-pc-windows-msvc` + `rust-src`；在 `hypervisor/` 下直接 `cargo build` 即可，不要依赖 rustup 的 `nightly` 别名（本机该别名可能指向 GNU，导致 `rust-src` 缺失或 `#![feature]` 被 stable 拒绝）。
 2. **`rust-lld` 缺失**：当前 nightly 不自带 `rust-lld`，`.cargo/config.toml` 使用绝对路径 `C:\Program Files\LLVM\bin\ld.lld.exe`。换机器要改路径。
 3. **clang 临时目录**：`build.rs` 把 `TMP/TEMP` 指到 `OUT_DIR/cc-tmp`；否则某些 Windows ACL 配置下 clang 会失败。
-4. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`tools/rdtsc_probe/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
+4. **target 目录**：每个 crate 用自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`loader/windows/um/mcp-server/`、`tools/rdtsc_probe/`、`tools/test_mcp_server/`），仓库根 `target/` 只放暂存产物。不要恢复 `.cargo-target`，也不要把 `target-dir` 指到别的 crate。如果 `target` 被其他进程锁定，先关掉占用进程，不要换目录绕过。
 5. **SVM 宿主测试的 cargo 配置**：`tests/test-svm-core.py` 默认在仓库外临时目录编译；不要把测试 crate 放到仓库 `target/` 下，否则会继承 `.cargo/config.toml` 的 `x86_64-unknown-none` + `build-std`，出现 `panic_handler` 缺失等假错误。
 6. **feature 组合**：每次改 `cfg` 后至少跑默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种构建；涉及外层兼容时再跑 `--features hypervisor-msr`。
 
@@ -605,6 +609,7 @@ python tests/test-mem-core.py
 - `README.md`：中文项目概览、feature、构建、日志；
 - `README_en.md`：英文项目概览；
 - `loader/windows/kernel/deviceio/README.md`：deviceio 驱动的 IOCTL/命令 ABI；
+- `MCP.md`：MCP/REST hypercall 服务的构建、端点、参数和安全边界；
 - `DOCS.md`：架构、ABI、全部坑、EPT/SVM/mem 细节。
 
 `docs/` 已移除，内容已合并到本文件。`tests/` 保留宿主测试脚本和 SVM harness；不要重新引入外部项目分析或旧移植计划。deviceio README 只维护现有 IOCTL/命令 ABI。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""构建手动映射版 loader：hypervisor + loader/windows/kdmapper + uapp。
+"""构建手动映射版 loader：hypervisor + loader/windows/kdmapper + nsvr + mcp-server。
 
 这一版的驱动把 hypervisor 镜像编进 `noumen_data.h`，所以构建前会先把编译出的
 ELF 重新生成成 C 数组头文件；驱动编译结束后恢复原来的 `noumen_data.h`
@@ -9,7 +9,9 @@ ELF 重新生成成 C 数组头文件；驱动编译结束后恢复原来的 `no
 
     noumen                  hypervisor ELF（留档/对比用）
     noumen_kdmapper.sys     内嵌镜像的驱动（vcxproj 里叫 driver.sys，暂存时改名）
-    uapp.exe                控制面板
+    nsvr.exe                GUI 前端
+    mcp-server.exe          只调用 hypercall 的 MCP HTTP 服务
+    test_mcp_server.exe     MCP/REST 冒烟测试工具
 
 等价于 `python build.py --flavor kdmapper`；额外参数原样透传。
 """

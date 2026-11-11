@@ -65,7 +65,7 @@ python build.py --clean-only
 
 ```text
 target/deviceio/   noumen, noumen_loader.sys, uapp.exe
-target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe
+target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe, mcp-server.exe, test_mcp_server.exe
 ```
 
 只构建 hypervisor：
@@ -86,6 +86,16 @@ cargo build --release --no-default-features --features buffer-log,vmx-ept,mem
 ```
 
 产物在 `hypervisor/target/x86_64-unknown-none/<profile>/noumen`。工具链已由 `rust-toolchain.toml` 固定；`.cargo/config.toml` 中的 `ld.lld.exe` 路径需按机器修改。
+
+## MCP hypercall 服务
+
+kdmapper 构建会同时生成只调用 hypercall 的 MCP/REST 服务：
+
+```powershell
+.\target\kdmapper\mcp-server.exe
+```
+
+构建、REST 端点、MCP 工具、参数和安全边界统一见 [MCP.md](MCP.md)。
 
 ## 测试
 
@@ -130,6 +140,7 @@ RAX = 返回值
 
 - [DOCS.md](DOCS.md)：架构、ABI、全部实现细节和坑；
 - [loader/windows/kernel/deviceio/README.md](loader/windows/kernel/deviceio/README.md)：deviceio IOCTL/命令 ABI；
+- [MCP.md](MCP.md)：MCP/REST hypercall 服务的完整说明；
 - [README_en.md](README_en.md)：英文概览；
 
 ## 已知限制

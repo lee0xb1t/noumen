@@ -1,0 +1,23 @@
+[package]
+name = "mcp-server"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+
+[dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+]
+
+[profile.dev.build-override]
+debug = false
+
+[profile.release.build-override]
+debug = false

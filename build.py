@@ -11,7 +11,7 @@
 产物统一落到 `target/<flavor>/`：
 
     target/deviceio/   noumen, noumen_loader.sys, uapp.exe
-    target/kdmapper/   noumen, noumen_kdmapper.sys, uapp.exe
+    target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe, mcp-server.exe, test_mcp_server.exe, test_mcp_server.exe
 
 单独构建某一版用 `build_deviceio.py` / `build_kdmapper.py`（见同目录脚本），
 它们只是本文件带 `--flavor` 的薄封装。
@@ -35,6 +35,8 @@ REPO_ROOT = Path(__file__).resolve().parent
 HYPERVISOR_DIR = REPO_ROOT / "hypervisor"
 LOADER_WINDOWS = REPO_ROOT / "loader" / "windows"
 PROBE_DIR = REPO_ROOT / "tools" / "rdtsc_probe"
+MCP_SERVER_DIR = LOADER_WINDOWS / "um" / "mcp-server"
+TEST_MCP_DIR = REPO_ROOT / "tools" / "test_mcp_server"
 
 DEFAULT_FEATURES = ["panic-detail", "buffer-log", "vmx-ept", "svm-npt", "mem"]
 OPTIONAL_FEATURES = ["serial-console", "native-bp", "hypervisor-msr"]
@@ -203,7 +205,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--skip-uapp",
         action="store_true",
-        help="do not rebuild uapp.exe",
+        help="do not rebuild user-mode apps (uapp/nsvr and mcp-server)",
     )
     parser.add_argument(
         "--with-probe",
@@ -394,6 +396,8 @@ def clean_all() -> None:
     # 每个前端各自就地构建。
     for flavor in FLAVORS.values():
         targets.append(flavor.app_dir / "target")
+    targets.append(MCP_SERVER_DIR / "target")
+    targets.append(TEST_MCP_DIR / "target")
 
     # MSBuild 的中间目录（每个 flavor 一份）。
     for flavor in FLAVORS.values():
@@ -637,6 +641,83 @@ def build_uapp(
     return executable
 
 
+def mcp_server_artifact(*, configuration: str) -> Path:
+    return (
+        MCP_SERVER_DIR
+        / "target"
+        / "x86_64-pc-windows-msvc"
+        / profile_of(configuration)
+        / "mcp-server.exe"
+    )
+
+
+def build_mcp_server(
+    cargo: str,
+    *,
+    configuration: str,
+    hypercall_key: str | None = None,
+) -> Path:
+    """Build the standalone hypercall MCP server (kdmapper flavor only)."""
+    show_step(f"mcp-server ({configuration})")
+
+    command = [cargo, "build"]
+    if configuration == "Release":
+        command.append("--release")
+
+    env = os.environ.copy()
+    env.pop("CARGO_TARGET_DIR", None)
+    if hypercall_key is not None:
+        env["NOUMEN_HYPERCALL_KEY"] = hypercall_key
+
+    run_command(
+        command,
+        cwd=MCP_SERVER_DIR,
+        env=env,
+        description="cargo build for mcp-server",
+    )
+
+    executable = mcp_server_artifact(configuration=configuration)
+    if not executable.is_file():
+        raise BuildError(f"mcp-server.exe was not produced at {executable}.")
+
+    return executable
+
+
+def test_mcp_server_artifact(*, configuration: str) -> Path:
+    return (
+        TEST_MCP_DIR
+        / "target"
+        / "x86_64-pc-windows-msvc"
+        / profile_of(configuration)
+        / "test_mcp_server.exe"
+    )
+
+
+def build_test_mcp_server(cargo: str, *, configuration: str) -> Path:
+    """Build the Rust smoke-test client for the MCP server."""
+    show_step(f"test_mcp_server ({configuration})")
+
+    command = [cargo, "build"]
+    if configuration == "Release":
+        command.append("--release")
+
+    env = os.environ.copy()
+    env.pop("CARGO_TARGET_DIR", None)
+
+    run_command(
+        command,
+        cwd=TEST_MCP_DIR,
+        env=env,
+        description="cargo build for test_mcp_server",
+    )
+
+    executable = test_mcp_server_artifact(configuration=configuration)
+    if not executable.is_file():
+        raise BuildError(f"test_mcp_server.exe was not produced at {executable}.")
+
+    return executable
+
+
 # --------------------------------------------------------------------- staging
 
 
@@ -679,6 +760,7 @@ def stage(
     driver: Path | None,
     app: Path | None,
     probe: Path | None = None,
+    extra: list[tuple[str, Path]] | None = None,
 ) -> int:
     destination_dir = root / flavor.name
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -696,6 +778,8 @@ def stage(
     ]
     if probe is not None:
         plan.append(("rdtsc_probe.exe", probe))
+    if extra is not None:
+        plan.extend(extra)
     for name, source in plan:
         if source is None:
             missing.append(name)
@@ -720,7 +804,7 @@ def stage(
     if failed:
         print(
             "WARNING: if noumen is loaded, stop the hypervisor / unload the driver and re-run;"
-            "uapp.exe has been updated when possible.",
+            "user-mode executables have been updated when possible.",
             file=sys.stderr,
         )
 
@@ -839,6 +923,41 @@ def main(argv: list[str]) -> int:
                 hypercall_key=args.hypercall_key,
             )
 
+        mcp: Path | None = None
+        test_tool: Path | None = None
+        if flavor.name == "kdmapper":
+            if args.skip_uapp:
+                show_step("mcp-server (build skipped)")
+                candidate = mcp_server_artifact(configuration=configuration)
+                if candidate.is_file():
+                    mcp = candidate
+                else:
+                    print(f"WARNING: build skipped and {candidate} does not exist")
+
+                show_step("test_mcp_server (build skipped)")
+                candidate = test_mcp_server_artifact(configuration=configuration)
+                if candidate.is_file():
+                    test_tool = candidate
+                else:
+                    print(f"WARNING: build skipped and {candidate} does not exist")
+            else:
+                assert cargo is not None
+                mcp = build_mcp_server(
+                    cargo,
+                    configuration=configuration,
+                    hypercall_key=args.hypercall_key,
+                )
+                test_tool = build_test_mcp_server(
+                    cargo,
+                    configuration=configuration,
+                )
+
+        extras: list[tuple[str, Path]] = []
+        if mcp is not None:
+            extras.append(("mcp-server.exe", mcp))
+        if test_tool is not None:
+            extras.append(("test_mcp_server.exe", test_tool))
+
         result |= stage(
             flavor,
             root=target_root,
@@ -846,6 +965,7 @@ def main(argv: list[str]) -> int:
             driver=driver,
             app=app,
             probe=probe,
+            extra=extras or None,
         )
 
     if result == 0:

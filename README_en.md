@@ -65,7 +65,7 @@ Artifacts:
 
 ```text
 target/deviceio/   noumen, noumen_loader.sys, uapp.exe
-target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe
+target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe, mcp-server.exe, test_mcp_server.exe
 ```
 
 Hypervisor only:
@@ -86,6 +86,17 @@ cargo build --release --no-default-features --features buffer-log,vmx-ept,mem
 ```
 
 The image is written to `hypervisor/target/x86_64-unknown-none/<profile>/noumen`. The toolchain is pinned by `rust-toolchain.toml`; update the `ld.lld.exe` path in `.cargo/config.toml` for other machines.
+
+## MCP hypercall server
+
+The kdmapper build also produces a hypercall-only MCP/REST server:
+
+```powershell
+.\target\kdmapper\mcp-server.exe
+```
+
+Build, REST endpoints, MCP tools, arguments, and safety boundaries are documented
+in [MCP.md](MCP.md).
 
 ## Tests
 
@@ -130,6 +141,7 @@ Command families:
 
 - [DOCS.md](DOCS.md): architecture, ABI, implementation details, and pitfalls;
 - [loader/windows/kernel/deviceio/README.md](loader/windows/kernel/deviceio/README.md): deviceio IOCTL/command ABI;
+- [MCP.md](MCP.md): full MCP/REST hypercall service documentation;
 - [README.md](README.md): Chinese overview;
 
 ## Known limitations
