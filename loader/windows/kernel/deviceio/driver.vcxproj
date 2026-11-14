@@ -22,32 +22,20 @@
     <ClCompile Include="comm.c" />
     <ClCompile Include="command.c" />
     <ClCompile Include="driver.c" />
-    <ClCompile Include="elfloader.c" />
-    <ClCompile Include="hypercall.c" />
-    <ClCompile Include="hypervisor.c" />
-    <ClCompile Include="noumenlog.c" />
-    <ClCompile Include="path.c" />
     <ClCompile Include="serial.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="comm.h" />
-    <ClInclude Include="command.h" />
     <ClInclude Include="driver.h" />
-    <ClInclude Include="elfloader.h" />
-    <ClInclude Include="hypercall.h" />
-    <ClInclude Include="hypervisor.h" />
-    <ClInclude Include="noumenlog.h" />
-    <ClInclude Include="path.h" />
-    <ClInclude Include="public.h" />
     <ClInclude Include="serial.h" />
-    <ClInclude Include="elf.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <MASM Include="elf_stub.asm" />
-    <MASM Include="hypercall_stub.asm" />
   </ItemGroup>
   <ItemGroup>
     <Inf Include="driver.inf" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\common\common_deviceio.vcxproj">
+      <Project>{A3C5E7B1-6D42-4B8E-9C71-2F0A4D6E8B21}</Project>
+    </ProjectReference>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{05B44DEE-4F95-5494-6B25-85463DC4C166}</ProjectGuid>
@@ -126,6 +114,11 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
   </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <TreatWarningAsError>false</TreatWarningAsError>

@@ -146,6 +146,7 @@ RAX = 返回值
 ## 文档
 
 - [DOCS.md](DOCS.md)：架构、ABI、全部实现细节和坑；
+- [loader/windows/kernel/common/README.md](loader/windows/kernel/common/README.md)：两个驱动的共享内核静态库；
 - [loader/windows/kernel/deviceio/README.md](loader/windows/kernel/deviceio/README.md)：deviceio IOCTL/命令 ABI；
 - [MCP.md](MCP.md)：MCP/REST hypercall 服务的完整说明；
 - [README_en.md](README_en.md)：英文概览；

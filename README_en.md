@@ -148,6 +148,7 @@ Command families:
 ## Documentation
 
 - [DOCS.md](DOCS.md): architecture, ABI, implementation details, and pitfalls;
+- [loader/windows/kernel/common/README.md](loader/windows/kernel/common/README.md): shared kernel static library for both loaders;
 - [loader/windows/kernel/deviceio/README.md](loader/windows/kernel/deviceio/README.md): deviceio IOCTL/command ABI;
 - [MCP.md](MCP.md): full MCP/REST hypercall service documentation;
 - [README.md](README.md): Chinese overview;

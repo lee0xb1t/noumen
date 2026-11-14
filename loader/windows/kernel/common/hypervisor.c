@@ -1,4 +1,4 @@
-#include "driver.h"
+#include "common.h"
 
 #define NOUMEN_PHYS_MAP 1
 
@@ -57,7 +57,6 @@ NoumenBuildKernelPfnList(
 // 不会变化），进程引用让 EPROCESS 在记录释放前不会被回收。
 //
 #define NOUMEN_MAX_EPT_HOOKS 32
-#define NOUMEN_EPT_HOOK_TAG  'NDIS'
 
 typedef struct _NOUMEN_EPT_HOOK_RECORD
 {
@@ -112,7 +111,6 @@ static KMUTEX g_SvmHookLock;
 // `NoumenEptProxyHookRemove`。
 //
 #define NOUMEN_NTCF_LOG_CAPACITY 64
-#define NOUMEN_NTCF_POOL_TAG 'NDIS'
 
 typedef struct _NOUMEN_NTCF_STATE
 {
@@ -146,7 +144,6 @@ static volatile LONG64 g_NtcfSequence;
 // 页由驱动分配并保存 base VA；unhook 时先恢复入口、等所有核 retire，再等
 // 在 origin 里的调用全部退出（InFlight），最后释放。
 //
-#define NOUMEN_EPT_PROXY_POOL_TAG 'NDIS'
 
 typedef
 NTSTATUS
@@ -361,6 +358,8 @@ NoumenHypervisorInitialize(
     g_NoumenHypervisor.LastStatus = STATUS_SUCCESS;
     g_NoumenHypervisor.HypercallKey = NOUMEN_HYPERCALL_KEY;
     g_NoumenHypervisor.KernelArgsInitialized = FALSE;
+    g_NoumenHypervisor.WinOffsetsProvided = FALSE;
+    RtlZeroMemory(&g_NoumenHypervisor.WinOffsets, sizeof(g_NoumenHypervisor.WinOffsets));
     g_NoumenHypervisor.ImageFromMemory = FALSE;
 
     RtlZeroMemory(g_NoumenImagePathBuffer, sizeof(g_NoumenImagePathBuffer));
@@ -402,9 +401,11 @@ NoumenHypervisorInitialize(
     //
     // 目标进程可能在页被锁住并 hook 期间退出。回调会移除 hook 并解锁 MDL。
     // 不满足 notify-routine 节要求的驱动可能注册失败；此时 Stop/卸载仍会
-    // 清理 hook。
+    // 清理 hook。kdmapper 手动映射版不注册该回调。
     //
-    //(VOID)PsSetCreateProcessNotifyRoutineEx(NoumenEptProcessExitNotify, FALSE);
+#if NOUMEN_ENABLE_PROCESS_NOTIFY
+    (VOID)PsSetCreateProcessNotifyRoutineEx(NoumenEptProcessExitNotify, FALSE);
+#endif
 }
 
 static
@@ -581,8 +582,13 @@ NoumenStartLocked(
         kernelArgs.StringBase = (UINT64)(ULONG_PTR)g_NoumenHypervisor.Image.StringTable;
         kernelArgs.StringSize = g_NoumenHypervisor.Image.StringTableSize;
 
-        kernelArgs.LogBase = 0; //
-        kernelArgs.LogSize = 0; //
+#if NOUMEN_ENABLE_LOGGER
+        kernelArgs.LogBase = (UINT64)(ULONG_PTR)NoumenLogBuffer();
+        kernelArgs.LogSize = NoumenLogBufferSize();
+#else
+        kernelArgs.LogBase = 0;
+        kernelArgs.LogSize = 0;
+#endif
 
         kernelArgs.Version = NOUMEN_KARGS_VERSION;
 
@@ -612,6 +618,16 @@ NoumenStartLocked(
     kernelArgs.CpuCount = (UINT8)CpuCount;
     kernelArgs.KernelPfnBase = (UINT64)(ULONG_PTR)g_KernelPfnList;
     kernelArgs.KernelPfnCount = g_KernelPfnCount;
+
+    //
+    // uapp 若下发过偏移表，就并进 KernelArgs；没下发时保持全 0，hypervisor
+    // 据此认为“没有偏移表”，依赖偏移的进程检查按不匹配处理（不隐藏）。
+    //
+    if (g_NoumenHypervisor.WinOffsetsProvided) {
+        kernelArgs.WinOffsets = g_NoumenHypervisor.WinOffsets;
+    } else {
+        RtlZeroMemory(&kernelArgs.WinOffsets, sizeof(kernelArgs.WinOffsets));
+    }
 
     g_NoumenHypervisor.CpuCount = CpuCount;
     g_NoumenHypervisor.SingleCore = SingleCore;
@@ -3563,6 +3579,41 @@ NoumenHypervisorSetKernelArgs(
 }
 
 NTSTATUS
+NoumenHypervisorSetWinOffsets(
+    _In_ const NOUMEN_WIN_OFFSETS *Offsets
+    )
+{
+    NTSTATUS waitStatus;
+
+    if (Offsets == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    waitStatus = KeWaitForMutexObject(&g_HypervisorLock, Executive, KernelMode, FALSE, NULL);
+
+    if (!NT_SUCCESS(waitStatus)) {
+        return waitStatus;
+    }
+
+    if (g_NoumenHypervisor.EntryInvoked) {
+        KeReleaseMutex(&g_HypervisorLock, FALSE);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    if (Offsets->Build == 0) {
+        g_NoumenHypervisor.WinOffsetsProvided = FALSE;
+        RtlZeroMemory(&g_NoumenHypervisor.WinOffsets, sizeof(g_NoumenHypervisor.WinOffsets));
+    } else {
+        g_NoumenHypervisor.WinOffsets = *Offsets;
+        g_NoumenHypervisor.WinOffsetsProvided = TRUE;
+    }
+
+    KeReleaseMutex(&g_HypervisorLock, FALSE);
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
 NoumenHypervisorSetImagePath(
     _In_reads_bytes_(Length) const WCHAR *Path,
     _In_ ULONG Length
@@ -3593,6 +3644,8 @@ NoumenHypervisorSetImagePath(
     NoumenElfFree(&g_NoumenHypervisor.Image);
     g_NoumenHypervisor.ImageFromMemory = FALSE;
     g_NoumenHypervisor.KernelArgsInitialized = FALSE;
+    g_NoumenHypervisor.WinOffsetsProvided = FALSE;
+    RtlZeroMemory(&g_NoumenHypervisor.WinOffsets, sizeof(g_NoumenHypervisor.WinOffsets));
     RtlZeroMemory(&g_NoumenHypervisor.KernelArgs, sizeof(g_NoumenHypervisor.KernelArgs));
 
     RtlCopyMemory(g_NoumenImagePathBuffer, ntPath.Buffer, ntPath.Length + sizeof(WCHAR));
@@ -3631,6 +3684,8 @@ NoumenHypervisorLoadImageFromMemory(
     NoumenElfFree(&g_NoumenHypervisor.Image);
     g_NoumenHypervisor.ImageFromMemory = FALSE;
     g_NoumenHypervisor.KernelArgsInitialized = FALSE;
+    g_NoumenHypervisor.WinOffsetsProvided = FALSE;
+    RtlZeroMemory(&g_NoumenHypervisor.WinOffsets, sizeof(g_NoumenHypervisor.WinOffsets));
     RtlZeroMemory(&g_NoumenHypervisor.KernelArgs, sizeof(g_NoumenHypervisor.KernelArgs));
 
     status = NoumenElfLoadFromMemory(Data, Size, 0, &g_NoumenHypervisor.Image);
@@ -3655,7 +3710,9 @@ NoumenHypervisorCleanup(
     // 先注销进程退出回调，再触碰注册表，然后释放所有锁住的目标页。正常
     // Stop 已经移除过 hook；这里是“没有 Stop 就卸载”的兜底。
     //
+#if NOUMEN_ENABLE_PROCESS_NOTIFY
     (VOID)PsSetCreateProcessNotifyRoutineEx(NoumenEptProcessExitNotify, TRUE);
+#endif
 
     NoumenEptHooksReleaseAll(FALSE);
 

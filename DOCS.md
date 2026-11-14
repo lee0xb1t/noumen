@@ -23,7 +23,7 @@ noumen 是一个运行在 x86_64 上的 Type-1 风格 hypervisor：
 4. **不要把 `#[cfg(test)]` 当成消 dead_code 警告的工具**。生产 API 即使当前只有测试调用，也必须保留在非 test 构建中。
 5. **不要修改 guest 真实物理页来做 hook**。所有代码 hook 都走 EPT/NPT 私有副本。
 6. **任何 hook 路径都必须能在 `STOP`/devirt 前恢复**；否则 guest 会带着 `0xCC` 或 detour 字节继续运行。
-7. **每个 crate 就地构建**：产物落在自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`tools/rdtsc_probe/`）。仓库根 `target/` **只放暂存产物** `deviceio/`、`kdmapper/`；编译器临时目录走系统 temp（`%TEMP%/noumen-build`）。不要用 `.cargo-target`，也不要把 target 指到别的 crate。
+7. **每个 crate 就地构建**：产物落在自己的 `target/`（`hypervisor/`、`loader/windows/um/uapp/`、`loader/windows/um/nsvr/`、`loader/windows/um/mcp-server/`、`tools/rdtsc_probe/`、`tools/test_mcp_server/`）。仓库根 `target/` **只放暂存产物** `deviceio/`、`kdmapper/`；内核静态库中间产物在 `loader/windows/kernel/common/build/`，编译器临时目录走系统 temp（`%TEMP%/noumen-build`）。不要用 `.cargo-target`，也不要把 target 指到别的 crate。
 8. **默认、release、`vmx-ept` only、`svm-npt` only、无 feature 五种配置都必须 0 warning 通过**。
 
 ## 3. 快速开始
@@ -163,6 +163,29 @@ src/
 ```
 
 `loader/windows/um/mcp-server/` 是独立的 hypercall-only MCP HTTP 服务，不属于 hypervisor crate；由 kdmapper 构建一起暂存。
+
+### Windows 内核公共库
+
+```text
+loader/windows/kernel/
+  common/                  deviceio 与 kdmapper 共享的静态库
+    common.h/Public.h      公共类型、池标签、flavor 开关
+    command.h              驱动命令/IOCTL ABI
+    elf.h/elfloader.c/h    ELF 装载
+    hypercall.c/h          hypercall 封装
+    hypervisor.c/h         镜像/KernelArgs/hook/HideSelf/日志
+    noumenlog.c/h          日志环和落盘
+    path.c/h               NT 路径转换
+    elf_stub.asm           ELF 跳板
+    hypercall_stub.asm     VMCALL/VMMCALL 跳板
+  deviceio/                驱动入口、IOCTL 通信、串口
+  kdmapper/                手动映射入口和嵌入镜像
+```
+
+`common_deviceio.vcxproj` / `common_kdmapper.vcxproj` 编译同一份源码，分别固定
+两个 flavor；两个驱动的 `driver.vcxproj` 各自通过 `ProjectReference` 引用匹配
+的工程。共享实现的细节见
+[loader/windows/kernel/common/README.md](loader/windows/kernel/common/README.md)。
 
 ### VMX 代码
 

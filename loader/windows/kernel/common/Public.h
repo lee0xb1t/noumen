@@ -8,7 +8,27 @@
 #endif
 
 #define NOUMEN_PROTOCOL_VERSION 4
-#define NOUMEN_POOL_TAG         'Noum'
+
+//
+// The two drivers share one source tree. The kdmapper flavor keeps the
+// original NDIS-style pool tags and does not enable the deviceio-only logger
+// startup or process-notify callback.
+//
+#ifdef NOUMEN_FLAVOR_KDMAPPER
+#define NOUMEN_POOL_TAG                 'NDIS'
+#define NOUMEN_ENABLE_LOGGER            0
+#define NOUMEN_ENABLE_PROCESS_NOTIFY    0
+#define NOUMEN_EPT_HOOK_TAG             NOUMEN_POOL_TAG
+#define NOUMEN_NTCF_POOL_TAG            NOUMEN_POOL_TAG
+#define NOUMEN_EPT_PROXY_POOL_TAG       NOUMEN_POOL_TAG
+#else
+#define NOUMEN_POOL_TAG                 'Noum'
+#define NOUMEN_ENABLE_LOGGER            1
+#define NOUMEN_ENABLE_PROCESS_NOTIFY    1
+#define NOUMEN_EPT_HOOK_TAG             'kHmN'
+#define NOUMEN_NTCF_POOL_TAG            'fCtN'
+#define NOUMEN_EPT_PROXY_POOL_TAG       'gEtN'
+#endif
 
 #ifndef NOUMEN_PANIC_DETAIL
 #define NOUMEN_PANIC_DETAIL     1

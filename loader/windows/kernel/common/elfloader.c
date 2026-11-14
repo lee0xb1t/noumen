@@ -1,4 +1,4 @@
-#include "driver.h"
+#include "common.h"
 
 #define NOUMEN_ELF_MAX_FILE_SIZE  (64 * 1024 * 1024)
 #define NOUMEN_ELF_MAX_IMAGE_SIZE (256 * 1024 * 1024)

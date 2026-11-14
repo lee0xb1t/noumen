@@ -5,13 +5,14 @@
 
     build.py                     本文件
     hypervisor/                  Rust hypervisor crate（产物：noumen ELF）
-    loader/windows/deviceio/     设备 IO 版 loader（driver/ + uapp/）
-    loader/windows/kdmapper/     手动映射版 loader（driver/ + app/，镜像内嵌）
+    loader/windows/kernel/common/ 两个驱动共享的内核静态库
+    loader/windows/kernel/deviceio/ 设备 IO 版 loader（driver/ + uapp/）
+    loader/windows/kernel/kdmapper/ 手动映射版 loader（driver/ + app/，镜像内嵌）
 
 产物统一落到 `target/<flavor>/`：
 
     target/deviceio/   noumen, noumen_loader.sys, uapp.exe
-    target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe, mcp-server.exe, test_mcp_server.exe, test_mcp_server.exe
+    target/kdmapper/   noumen, noumen_kdmapper.sys, nsvr.exe, mcp-server.exe, test_mcp_server.exe
 
 单独构建某一版用 `build_deviceio.py` / `build_kdmapper.py`（见同目录脚本），
 它们只是本文件带 `--flavor` 的薄封装。
@@ -34,6 +35,7 @@ from tools.file_to_c_array import format_c_array
 REPO_ROOT = Path(__file__).resolve().parent
 HYPERVISOR_DIR = REPO_ROOT / "hypervisor"
 LOADER_WINDOWS = REPO_ROOT / "loader" / "windows"
+KERNEL_COMMON_DIR = LOADER_WINDOWS / "kernel" / "common"
 PROBE_DIR = REPO_ROOT / "tools" / "rdtsc_probe"
 MCP_SERVER_DIR = LOADER_WINDOWS / "um" / "mcp-server"
 TEST_MCP_DIR = REPO_ROOT / "tools" / "test_mcp_server"
@@ -404,6 +406,7 @@ def clean_all() -> None:
         targets.append(flavor.driver_dir / "build")
         targets.append(flavor.driver_dir / "x64")
         targets.append(flavor.driver_dir / ".vs")
+    targets.append(KERNEL_COMMON_DIR / "build")
 
     freed = clean_paths(targets)
 

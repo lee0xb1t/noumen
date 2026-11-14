@@ -88,6 +88,11 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
   </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
@@ -134,27 +139,16 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="elfloader.c" />
-    <ClCompile Include="hypercall.c" />
-    <ClCompile Include="hypervisor.c" />
     <ClCompile Include="main.c" />
-    <ClCompile Include="noumenlog.c" />
-    <ClCompile Include="path.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="command.h" />
     <ClInclude Include="Driver.h" />
-    <ClInclude Include="elfloader.h" />
-    <ClInclude Include="hypercall.h" />
-    <ClInclude Include="hypervisor.h" />
-    <ClInclude Include="noumenlog.h" />
     <ClInclude Include="noumen_data.h" />
-    <ClInclude Include="path.h" />
-    <ClInclude Include="Public.h" />
   </ItemGroup>
   <ItemGroup>
-    <MASM Include="elf_stub.asm" />
-    <MASM Include="hypercall_stub.asm" />
+    <ProjectReference Include="..\common\common_kdmapper.vcxproj">
+      <Project>{B4D6F8C2-7E53-4C9F-8D82-3A1B5E7F9C32}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
