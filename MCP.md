@@ -58,6 +58,7 @@ MCP 端点；`GET /help` 和 `mcp-server --help` 会列出完整参数和示例�
 | `--port` | `8000` | HTTP 端口 |
 | `--key` | 构建期默认 | hypercall key |
 | `--processor` | `0` | VMCALL 前绑定的 CPU；`any` = 当前 CPU |
+| `--ntos-base` | 自动 | ntos REST API 使用的 ntoskrnl 基址覆盖 |
 | `--only` | 全部 | 只暴露逗号分隔的操作名 |
 | `--list-operations` | - | 列出操作名、方法和路径 |
 | `-h`, `--help` | - | 列出全部接口、参数和用法 |
@@ -94,9 +95,16 @@ GET /health   # 服务状态和操作名，不执行 hypercall
 | `read_self` | GET | `/api/self/read` | `page?`, `view?`, `length?` |
 | `mem_query` | GET | `/api/memory` | - |
 | `mem_map` | GET | `/api/memory/map` | `capacity?` |
+| `mem_cr3` | GET | `/api/memory/cr3` | - |
 | `mem_read` | GET | `/api/memory/read` | `cr3*`, `address*`, `length?` |
+| `mem_read_many` | POST | `/api/memory/read-many` | `requests*` |
 | `mem_write` | POST | `/api/memory/write` | `cr3*`, `address*`, `data*` |
 | `mem_translate` | GET | `/api/memory/translate` | `cr3*`, `address*` |
+| `ntos_kernel_modules` | GET | `/api/ntos/kernel-modules` | `ntos_base?` |
+| `ntos_processes` | GET | `/api/ntos/processes` | `ntos_base?` |
+| `ntos_process_modules` | GET | `/api/ntos/processes/modules` | `pid*`, `ntos_base?` |
+| `extra_data_get` | GET | `/api/extra-data` | - |
+| `extra_data_set` | POST | `/api/extra-data/set` | `value*` |
 | `hooks_apply` | POST | `/api/hooks/apply` | - |
 | `hooks_retired` | GET | `/api/hooks/retired` | - |
 
@@ -106,6 +114,11 @@ GET /health   # 服务状态和操作名，不执行 hypercall
 - `flush_logs.capacity` 默认 65536，上限 1 MiB；每条日志记录 152 字节；
 - `mem_map.capacity` 默认 64，上限 1024；
 - `mem_read`/`mem_write` 长度 1–4096，`mem_write.data` 是十六进制字节串；
+- `mem_read_many.requests` 最多 1 条，每条 `{cr3,address,length?}`，使用 64 KiB 环，每条 `MEM_BATCH` 执行 1 条；
+- `mem_cr3` 返回 hypervisor 当前 system CR3，不再使用启动日志里的旧值；
+- `ntos_kernel_modules` / `ntos_processes` / `ntos_process_modules` 使用 system CR3 遍历内核对象；ntos 基址顺序为请求 `ntos_base`、`--ntos-base`、`extra_data_get`、本地枚举；
+- `ntos_kernel_modules` = `PsLoadedModuleList`；`ntos_processes` = `ActiveProcessLinks`；`ntos_process_modules` = 目标进程 `PEB → Ldr → InLoadOrderModuleList`；
+- `extra_data_get` / `extra_data_set` 读写 hypervisor 的 8 字节 opaque 数据（`0x28`/`0x29`），可用于跨进程/无 deviceio 环境传递 ntos 基址；
 - `hide_self`、`mem_write`、`hooks_apply` 是管理面操作。
 
 示例：
@@ -115,10 +128,21 @@ curl.exe http://127.0.0.1:8000/api
 curl.exe http://127.0.0.1:8000/help
 curl.exe "http://127.0.0.1:8000/api/ping?nonce=0x1234"
 curl.exe "http://127.0.0.1:8000/api/memory/read?cr3=0x1ae000&address=0xfffff80000000000&length=16"
+curl.exe "http://127.0.0.1:8000/api/memory/cr3"
+curl.exe "http://127.0.0.1:8000/api/ntos/kernel-modules?ntos_base=0xfffff80000000000"
+curl.exe "http://127.0.0.1:8000/api/ntos/processes"
+curl.exe "http://127.0.0.1:8000/api/ntos/processes/modules?pid=4"
+curl.exe "http://127.0.0.1:8000/api/extra-data"
+curl.exe -X POST http://127.0.0.1:8000/api/extra-data/set `
+  -H "Content-Type: application/json" -d '{"value":"0xfffff80000000000"}'
 
 curl.exe -X POST http://127.0.0.1:8000/api/memory/write `
   -H "Content-Type: application/json" `
   -d '{"cr3":"0x1ae000","address":"0xfffff80000000000","data":"DEADBEEF"}'
+
+curl.exe -X POST http://127.0.0.1:8000/api/memory/read-many `
+  -H "Content-Type: application/json" `
+  -d '{"requests":[{"cr3":"0x1ae000","address":"0xfffff80000000000","length":16}]}'
 ```
 
 ## MCP

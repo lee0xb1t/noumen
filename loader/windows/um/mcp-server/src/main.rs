@@ -24,6 +24,7 @@ pub struct Config {
     pub port: u16,
     pub key: u64,
     pub processor: Option<u32>,
+    pub ntos_base: Option<u64>,
     pub only: Option<Vec<&'static str>>,
 }
 
@@ -56,6 +57,7 @@ fn parse_args() -> Result<Option<Config>, String> {
     let mut port = 8000u16;
     let mut key = generated::DEFAULT_KEY;
     let mut processor = Some(0u32);
+    let mut ntos_base = None;
     let mut only: Option<Vec<&'static str>> = None;
 
     let mut args = env::args().skip(1);
@@ -88,6 +90,12 @@ fn parse_args() -> Result<Option<Config>, String> {
                             .map_err(|error| format!("invalid --processor: {error}"))?,
                     )
                 };
+            }
+            "--ntos-base" => {
+                let value = args.next().ok_or("--ntos-base requires a value")?;
+                ntos_base = Some(
+                    parse_u64(&value).map_err(|error| format!("invalid --ntos-base: {error}"))?,
+                );
             }
             "--only" => {
                 let value = args.next().ok_or("--only requires operation names")?;
@@ -123,6 +131,7 @@ fn parse_args() -> Result<Option<Config>, String> {
         port,
         key,
         processor,
+        ntos_base,
         only,
     }))
 }
@@ -201,6 +210,7 @@ Options:
   --port <port>          HTTP port (default 8000)
   --key <u64>            hypercall key (default built-in 0x{key:X})
   --processor <n|any>    pin calls to CPU n (default 0); any = current CPU
+  --ntos-base <u64>      optional ntoskrnl base for ntos REST APIs
   --only <names>         expose only comma-separated operation names
   --list-operations      print operation names, methods and paths
   -h, --help             show this help

@@ -4,10 +4,18 @@
 //! below are private ABI details confined to this module.
 
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::c_void;
+use std::ptr;
 
 use serde_json::{Map, Value, json};
+use windows_sys::Win32::System::Memory::{
+    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualLock,
+    VirtualUnlock,
+};
 
 use crate::{Config, hypercall};
+
+mod ntos;
 
 const PING: u64 = 3;
 const HIDE_SELF: u64 = 9;
@@ -21,6 +29,9 @@ const LOGGER_INFO: u64 = 2;
 const MEM_QUERY: u64 = 0x20;
 const MEM_BATCH: u64 = 0x21;
 const MEM_MAP: u64 = 0x23;
+const GET_SYSTEM_CR3: u64 = 0x27;
+const GET_EXTRA_DATA: u64 = 0x28;
+const SET_EXTRA_DATA: u64 = 0x29;
 
 const MEM_OP_READ_VIRT: u16 = 0;
 const MEM_OP_WRITE_VIRT: u16 = 1;
@@ -30,7 +41,10 @@ const PONG_MAGIC: u64 = 0x504F_4E47;
 const MEM_RING_MAGIC: u32 = 0x4D45_4D4E;
 const MEM_DATA_OFFSET: usize = 0x1000;
 const MEM_ENTRY_OFFSET: usize = 0x40;
+const MEM_ENTRY_CAPACITY: u16 = 126;
 const MAX_MEM_OP: usize = 0x1000;
+const MEM_RING_BYTES: usize = 64 * 1024;
+const MAX_MEM_OPS: usize = 1;
 const MAX_LOG_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,6 +75,7 @@ pub struct Operation {
     pub schema: fn() -> Value,
 }
 
+#[derive(Debug)]
 pub struct OpError {
     pub status: u16,
     pub message: String,
@@ -83,6 +98,50 @@ impl OpError {
 
     pub fn is_bad_request(&self) -> bool {
         self.status == 400
+    }
+}
+
+#[derive(Debug)]
+struct LockedBuffer {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl LockedBuffer {
+    fn new(len: usize) -> Result<Self, OpError> {
+        let ptr =
+            unsafe { VirtualAlloc(ptr::null(), len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }
+                as *mut u8;
+
+        if ptr.is_null() {
+            return Err(OpError::unavailable(
+                "VirtualAlloc for MEM_BATCH ring failed",
+            ));
+        }
+
+        // uapp treats the lock as best-effort. A failed lock only means the
+        // ring page may be trimmed later; the hypercall can still read it.
+        // Do not turn this into a fatal API error.
+        let _ = unsafe { VirtualLock(ptr.cast::<c_void>(), len) };
+
+        Ok(Self { ptr, len })
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl Drop for LockedBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = VirtualUnlock(self.ptr.cast::<c_void>(), self.len);
+            let _ = VirtualFree(self.ptr.cast::<c_void>(), 0, MEM_RELEASE);
+        }
     }
 }
 
@@ -145,12 +204,28 @@ pub fn all() -> &'static [Operation] {
             schema: mem_map_schema,
         },
         Operation {
+            name: "mem_cr3",
+            method: Method::Get,
+            path: "/api/memory/cr3",
+            summary: "Read the hypervisor's current system CR3.",
+            handler: mem_cr3,
+            schema: empty_schema,
+        },
+        Operation {
             name: "mem_read",
             method: Method::Get,
             path: "/api/memory/read",
             summary: "Read guest virtual memory through MEM_BATCH.",
             handler: mem_read,
             schema: mem_read_schema,
+        },
+        Operation {
+            name: "mem_read_many",
+            method: Method::Post,
+            path: "/api/memory/read-many",
+            summary: "Read one guest virtual-memory range per MEM_BATCH (64 KiB ring).",
+            handler: mem_read_many,
+            schema: mem_read_many_schema,
         },
         Operation {
             name: "mem_write",
@@ -167,6 +242,46 @@ pub fn all() -> &'static [Operation] {
             summary: "Translate a guest virtual address through MEM_BATCH.",
             handler: mem_translate,
             schema: mem_translate_schema,
+        },
+        Operation {
+            name: "ntos_kernel_modules",
+            method: Method::Get,
+            path: "/api/ntos/kernel-modules",
+            summary: "Enumerate kernel modules through PsLoadedModuleList.",
+            handler: ntos::kernel_modules,
+            schema: ntos_schema,
+        },
+        Operation {
+            name: "ntos_processes",
+            method: Method::Get,
+            path: "/api/ntos/processes",
+            summary: "Enumerate processes through ActiveProcessLinks.",
+            handler: ntos::process_list,
+            schema: ntos_schema,
+        },
+        Operation {
+            name: "ntos_process_modules",
+            method: Method::Get,
+            path: "/api/ntos/processes/modules",
+            summary: "Enumerate a process's modules through PEB/Ldr.",
+            handler: ntos::process_modules,
+            schema: ntos_process_modules_schema,
+        },
+        Operation {
+            name: "extra_data_get",
+            method: Method::Get,
+            path: "/api/extra-data",
+            summary: "Read the hypervisor's opaque 8-byte extra data.",
+            handler: extra_data_get,
+            schema: empty_schema,
+        },
+        Operation {
+            name: "extra_data_set",
+            method: Method::Post,
+            path: "/api/extra-data/set",
+            summary: "Set the hypervisor's opaque 8-byte extra data.",
+            handler: extra_data_set,
+            schema: extra_data_set_schema,
         },
         Operation {
             name: "hooks_apply",
@@ -344,30 +459,95 @@ fn mem_map(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError>
     Ok(json!({ "count": result.rax, "ranges": ranges }))
 }
 
+fn mem_cr3(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
+    let result = invoke(config, GET_SYSTEM_CR3, args, 0, 0, 0)?;
+
+    Ok(json!({ "system_cr3": hex(result.rax) }))
+}
+
 fn mem_read(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
     let cr3 = required_u64(args, "cr3")?;
     let address = required_u64(args, "address")?;
     let length = get_u64(args, "length", 4096)?.clamp(1, MAX_MEM_OP as u64) as u32;
-
-    let (mut ring, _) = build_mem_ring(MEM_OP_READ_VIRT, cr3, address, length, None)?;
-    let result = invoke(
+    let (ring, _) = run_mem_batch(
         config,
-        MEM_BATCH,
         args,
-        ring.as_mut_ptr() as u64,
-        ring.len() as u64,
-        0,
+        &[MemRequest {
+            operation: MEM_OP_READ_VIRT,
+            cr3,
+            address,
+            length,
+            payload: None,
+        }],
     )?;
-    let status = ring_status(&ring);
+    let status = ring_status(ring.as_slice());
     let bytes = if status == 0 { length as usize } else { 0 };
 
     Ok(json!({
         "status": status,
         "status_name": mem_error_name(status),
-        "rax": hex(result.rax),
         "address": hex(address),
-        "data": encode_hex(&ring[MEM_DATA_OFFSET..MEM_DATA_OFFSET + bytes])
+        "data": encode_hex(&ring.as_slice()[MEM_DATA_OFFSET..MEM_DATA_OFFSET + bytes])
     }))
+}
+
+fn mem_read_many(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
+    let requests = args
+        .get("requests")
+        .and_then(Value::as_array)
+        .ok_or_else(|| OpError::bad_request("requests must be an array"))?;
+
+    if requests.is_empty() || requests.len() > MAX_MEM_OPS {
+        return Err(OpError::bad_request(format!(
+            "requests must contain 1..={MAX_MEM_OPS} entries"
+        )));
+    }
+
+    let mut batch = Vec::with_capacity(requests.len());
+    let mut requested = Vec::with_capacity(requests.len());
+
+    for request in requests {
+        let request = request
+            .as_object()
+            .ok_or_else(|| OpError::bad_request("each request must be an object"))?;
+        let cr3 = required_u64(request, "cr3")?;
+        let address = required_u64(request, "address")?;
+        let length = get_u64(request, "length", 4096)?.clamp(1, MAX_MEM_OP as u64) as u32;
+
+        requested.push((address, length));
+        batch.push(MemRequest {
+            operation: MEM_OP_READ_VIRT,
+            cr3,
+            address,
+            length,
+            payload: None,
+        });
+    }
+
+    let (ring, _) = run_mem_batch(config, args, &batch)?;
+    let mut entries = Vec::with_capacity(batch.len());
+
+    for (index, (address, length)) in requested.iter().enumerate() {
+        let entry = MEM_ENTRY_OFFSET + index * 32;
+        let data = MEM_DATA_OFFSET + index * MAX_MEM_OP;
+        let status = read_u16(ring.as_slice(), entry + 2);
+        let written = read_u32(ring.as_slice(), entry + 4);
+        let bytes = if status == 0 {
+            (written as usize).min(*length as usize)
+        } else {
+            0
+        };
+
+        entries.push(json!({
+            "status": status,
+            "status_name": mem_error_name(status),
+            "address": hex(*address),
+            "length": length,
+            "data": encode_hex(&ring.as_slice()[data..data + bytes])
+        }));
+    }
+
+    Ok(json!({ "count": entries.len(), "entries": entries }))
 }
 
 fn mem_write(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
@@ -382,21 +562,22 @@ fn mem_write(config: &Config, args: &Map<String, Value>) -> Result<Value, OpErro
     }
 
     let length = data.len() as u32;
-    let (mut ring, _) = build_mem_ring(MEM_OP_WRITE_VIRT, cr3, address, length, Some(&data))?;
-    let result = invoke(
+    let (ring, _) = run_mem_batch(
         config,
-        MEM_BATCH,
         args,
-        ring.as_mut_ptr() as u64,
-        ring.len() as u64,
-        0,
+        &[MemRequest {
+            operation: MEM_OP_WRITE_VIRT,
+            cr3,
+            address,
+            length,
+            payload: Some(&data),
+        }],
     )?;
-    let status = ring_status(&ring);
+    let status = ring_status(ring.as_slice());
 
     Ok(json!({
         "status": status,
         "status_name": mem_error_name(status),
-        "rax": hex(result.rax),
         "address": hex(address),
         "bytes": if status == 0 { length } else { 0 }
     }))
@@ -405,19 +586,20 @@ fn mem_write(config: &Config, args: &Map<String, Value>) -> Result<Value, OpErro
 fn mem_translate(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
     let cr3 = required_u64(args, "cr3")?;
     let address = required_u64(args, "address")?;
-
-    let (mut ring, _) = build_mem_ring(MEM_OP_TRANSLATE, cr3, address, 0, None)?;
-    let result = invoke(
+    let (ring, _) = run_mem_batch(
         config,
-        MEM_BATCH,
         args,
-        ring.as_mut_ptr() as u64,
-        ring.len() as u64,
-        0,
+        &[MemRequest {
+            operation: MEM_OP_TRANSLATE,
+            cr3,
+            address,
+            length: 0,
+            payload: None,
+        }],
     )?;
-    let status = ring_status(&ring);
+    let status = ring_status(ring.as_slice());
     let physical = if status == 0 {
-        read_u64(&ring, MEM_DATA_OFFSET)
+        read_u64(ring.as_slice(), MEM_DATA_OFFSET)
     } else {
         0
     };
@@ -425,10 +607,97 @@ fn mem_translate(config: &Config, args: &Map<String, Value>) -> Result<Value, Op
     Ok(json!({
         "status": status,
         "status_name": mem_error_name(status),
-        "rax": hex(result.rax),
         "address": hex(address),
         "physical": hex(physical)
     }))
+}
+
+fn read_virtual(
+    config: &Config,
+    args: &Map<String, Value>,
+    cr3: u64,
+    address: u64,
+    length: u32,
+) -> Result<Vec<u8>, OpError> {
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+
+    let (ring, _) = run_mem_batch(
+        config,
+        args,
+        &[MemRequest {
+            operation: MEM_OP_READ_VIRT,
+            cr3,
+            address,
+            length,
+            payload: None,
+        }],
+    )?;
+    let status = ring_status(ring.as_slice());
+
+    if status != 0 {
+        return Err(OpError::unavailable(format!(
+            "read {address:#x} failed: status={status} ({})",
+            mem_error_name(status)
+        )));
+    }
+
+    Ok(ring.as_slice()[MEM_DATA_OFFSET..MEM_DATA_OFFSET + length as usize].to_vec())
+}
+
+fn read_many_virtual(
+    config: &Config,
+    args: &Map<String, Value>,
+    cr3: u64,
+    reads: &[(u64, u32)],
+) -> Result<Vec<Option<Vec<u8>>>, OpError> {
+    if reads.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut requests = Vec::with_capacity(reads.len());
+    for (address, length) in reads {
+        requests.push(MemRequest {
+            operation: MEM_OP_READ_VIRT,
+            cr3,
+            address: *address,
+            length: *length,
+            payload: None,
+        });
+    }
+
+    let (ring, _) = run_mem_batch(config, args, &requests)?;
+    let mut results = Vec::with_capacity(reads.len());
+
+    for (index, (_, length)) in reads.iter().enumerate() {
+        let entry = MEM_ENTRY_OFFSET + index * 32;
+        let data = MEM_DATA_OFFSET + index * MAX_MEM_OP;
+        let status = read_u16(ring.as_slice(), entry + 2);
+        let written = read_u32(ring.as_slice(), entry + 4);
+
+        if status == 0 {
+            let bytes = (written as usize).min(*length as usize);
+            results.push(Some(ring.as_slice()[data..data + bytes].to_vec()));
+        } else {
+            results.push(None);
+        }
+    }
+
+    Ok(results)
+}
+
+fn extra_data_get(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
+    let result = invoke(config, GET_EXTRA_DATA, args, 0, 0, 0)?;
+
+    Ok(json!({ "value": hex(result.rax) }))
+}
+
+fn extra_data_set(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
+    let value = required_u64(args, "value")?;
+    invoke(config, SET_EXTRA_DATA, args, value, 0, 0)?;
+
+    Ok(json!({ "value": hex(value) }))
 }
 
 fn hooks_apply(config: &Config, args: &Map<String, Value>) -> Result<Value, OpError> {
@@ -546,42 +815,101 @@ fn get_hex_data(args: &Map<String, Value>, key: &str) -> Result<Vec<u8>, OpError
     Ok(bytes)
 }
 
-fn build_mem_ring(
+struct MemRequest<'a> {
     operation: u16,
     cr3: u64,
     address: u64,
     length: u32,
-    payload: Option<&[u8]>,
-) -> Result<(Vec<u8>, usize), OpError> {
-    let capacity = MEM_DATA_OFFSET + length.max(8) as usize;
-    let mut ring = vec![0u8; capacity];
+    payload: Option<&'a [u8]>,
+}
 
-    write_u32(&mut ring, 0, MEM_RING_MAGIC);
-    write_u16(&mut ring, 4, 1);
-    write_u16(&mut ring, 6, 0);
-    write_u32(&mut ring, 8, capacity as u32);
-    write_u16(&mut ring, 12, 1);
-    write_u16(&mut ring, 14, 0);
-    write_u16(&mut ring, 16, 1);
-    write_u32(&mut ring, 20, 0);
-    write_u32(&mut ring, 24, 0);
+fn build_mem_ring(requests: &[MemRequest<'_>]) -> Result<(LockedBuffer, usize), OpError> {
+    if requests.is_empty() || requests.len() > MAX_MEM_OPS {
+        return Err(OpError::bad_request(format!(
+            "MEM_BATCH requires 1..={MAX_MEM_OPS} entries"
+        )));
+    }
 
-    write_u16(&mut ring, MEM_ENTRY_OFFSET, operation);
-    write_u16(&mut ring, MEM_ENTRY_OFFSET + 2, 0);
-    write_u32(&mut ring, MEM_ENTRY_OFFSET + 4, length);
-    write_u64(&mut ring, MEM_ENTRY_OFFSET + 8, cr3);
-    write_u64(&mut ring, MEM_ENTRY_OFFSET + 16, address);
-    write_u32(&mut ring, MEM_ENTRY_OFFSET + 24, MEM_DATA_OFFSET as u32);
-    write_u32(&mut ring, MEM_ENTRY_OFFSET + 28, 0);
+    let needed = MEM_DATA_OFFSET
+        .checked_add(requests.len() * MAX_MEM_OP)
+        .ok_or_else(|| OpError::bad_request("MEM_BATCH ring size overflow"))?;
+    let capacity = MEM_RING_BYTES.max(needed.next_power_of_two());
 
-    if let Some(payload) = payload {
-        if payload.len() > length as usize {
-            return Err(OpError::bad_request("payload exceeds length"));
+    if capacity > 4 * 1024 * 1024 {
+        return Err(OpError::bad_request("MEM_BATCH ring exceeds 4 MiB"));
+    }
+
+    let mut ring = LockedBuffer::new(capacity)?;
+    let buffer = ring.as_mut_slice();
+
+    write_u32(buffer, 0, MEM_RING_MAGIC);
+    write_u16(buffer, 4, 1);
+    write_u16(buffer, 6, 0);
+    write_u32(buffer, 8, capacity as u32);
+    write_u16(buffer, 12, MEM_ENTRY_CAPACITY);
+    write_u16(buffer, 14, 0);
+    write_u16(buffer, 16, requests.len() as u16);
+    write_u16(buffer, 18, 0);
+    write_u32(buffer, 20, 1);
+    write_u32(buffer, 24, 0);
+
+    for (index, request) in requests.iter().enumerate() {
+        if request.length as usize > MAX_MEM_OP {
+            return Err(OpError::bad_request("MEM_BATCH entry is too large"));
         }
-        ring[MEM_DATA_OFFSET..MEM_DATA_OFFSET + payload.len()].copy_from_slice(payload);
+
+        let entry = MEM_ENTRY_OFFSET + index * 32;
+        let data = MEM_DATA_OFFSET + index * MAX_MEM_OP;
+        let length = request.payload.map_or(request.length, |payload| {
+            payload.len().min(request.length as usize) as u32
+        });
+
+        write_u16(buffer, entry, request.operation);
+        write_u16(buffer, entry + 2, 0);
+        write_u32(buffer, entry + 4, length);
+        write_u64(buffer, entry + 8, request.cr3);
+        write_u64(buffer, entry + 16, request.address);
+        write_u32(buffer, entry + 24, data as u32);
+        write_u32(buffer, entry + 28, 0);
+
+        if let Some(payload) = request.payload {
+            if payload.len() > request.length as usize {
+                return Err(OpError::bad_request("payload exceeds entry length"));
+            }
+            buffer[data..data + payload.len()].copy_from_slice(payload);
+        }
     }
 
     Ok((ring, capacity))
+}
+
+fn run_mem_batch(
+    config: &Config,
+    args: &Map<String, Value>,
+    requests: &[MemRequest<'_>],
+) -> Result<(LockedBuffer, u64), OpError> {
+    let (mut ring, capacity) = build_mem_ring(requests)?;
+    let result = invoke(
+        config,
+        MEM_BATCH,
+        args,
+        ring.as_mut_slice().as_mut_ptr() as u64,
+        capacity as u64,
+        0,
+    )?;
+    let processed = result.rax;
+
+    if processed != requests.len() as u64 {
+        let ring_error = read_u32(ring.as_slice(), 24);
+        let head = read_u16(ring.as_slice(), 14);
+
+        return Err(OpError::unavailable(format!(
+            "MEM_BATCH did not execute: processed={processed} expected={} head={head} ring_error={ring_error}",
+            requests.len()
+        )));
+    }
+
+    Ok((ring, processed))
 }
 
 fn ring_status(ring: &[u8]) -> u16 {
@@ -598,6 +926,14 @@ fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
 
 fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
     buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn read_u16(buffer: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(buffer[offset..offset + 2].try_into().unwrap())
+}
+
+fn read_u32(buffer: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap())
 }
 
 fn read_u64(buffer: &[u8], offset: usize) -> u64 {
@@ -734,6 +1070,65 @@ fn mem_read_schema() -> Value {
     schema_with(properties, &["cr3", "address"])
 }
 
+fn mem_read_many_schema() -> Value {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "requests",
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_MEM_OPS,
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "cr3": number_or_string("Guest CR3 used for translation."),
+                    "address": number_or_string("Guest virtual address."),
+                    "length": number_or_string("Bytes to read, 1..=4096; default 4096.")
+                },
+                "required": ["cr3", "address"]
+            }
+        }),
+    );
+    properties.insert("processor", processor_property());
+
+    schema_with(properties, &["requests"])
+}
+
+fn ntos_schema() -> Value {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "ntos_base",
+        number_or_string("Optional ntoskrnl base VA; otherwise ExtraData/local lookup."),
+    );
+    properties.insert("processor", processor_property());
+
+    schema_with(properties, &[])
+}
+
+fn ntos_process_modules_schema() -> Value {
+    let mut properties = BTreeMap::new();
+    properties.insert("pid", number_or_string("Target process ID."));
+    properties.insert(
+        "ntos_base",
+        number_or_string("Optional ntoskrnl base VA; otherwise ExtraData/local lookup."),
+    );
+    properties.insert("processor", processor_property());
+
+    schema_with(properties, &["pid"])
+}
+
+fn extra_data_set_schema() -> Value {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "value",
+        number_or_string("Opaque 8-byte value to store in the hypervisor."),
+    );
+    properties.insert("processor", processor_property());
+
+    schema_with(properties, &["value"])
+}
+
 fn mem_write_schema() -> Value {
     let mut properties = BTreeMap::new();
     properties.insert("cr3", number_or_string("Guest CR3 used for translation."));
@@ -757,4 +1152,61 @@ fn mem_translate_schema() -> Value {
     properties.insert("processor", processor_property());
 
     schema_with(properties, &["cr3", "address"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mem_ring_header_matches_hypervisor_abi() {
+        let payload = [0xAAu8, 0xBB];
+        let (ring, capacity) = build_mem_ring(&[MemRequest {
+            operation: MEM_OP_WRITE_VIRT,
+            cr3: 0x1ae000,
+            address: 0xfffff800_00000000,
+            length: payload.len() as u32,
+            payload: Some(&payload),
+        }])
+        .unwrap();
+        let ring = ring.as_slice();
+
+        assert_eq!(capacity, 0x1_0000);
+        assert_eq!(read_u32(ring, 0), MEM_RING_MAGIC);
+        assert_eq!(read_u16(ring, 4), 1);
+        assert_eq!(read_u32(ring, 8), capacity as u32);
+        assert_eq!(read_u16(ring, 12), MEM_ENTRY_CAPACITY);
+        assert_eq!(read_u16(ring, 14), 0);
+        assert_eq!(read_u16(ring, 16), 1);
+        assert_eq!(read_u32(ring, 20), 1);
+        assert_eq!(read_u16(ring, MEM_ENTRY_OFFSET), MEM_OP_WRITE_VIRT);
+        assert_eq!(read_u32(ring, MEM_ENTRY_OFFSET + 4), payload.len() as u32);
+        assert_eq!(
+            read_u32(ring, MEM_ENTRY_OFFSET + 24),
+            MEM_DATA_OFFSET as u32
+        );
+        assert_eq!(&ring[MEM_DATA_OFFSET..MEM_DATA_OFFSET + 2], &payload);
+    }
+
+    #[test]
+    fn batch_limit_is_one() {
+        let err = build_mem_ring(&[
+            MemRequest {
+                operation: MEM_OP_READ_VIRT,
+                cr3: 1,
+                address: 2,
+                length: 8,
+                payload: None,
+            },
+            MemRequest {
+                operation: MEM_OP_READ_VIRT,
+                cr3: 3,
+                address: 4,
+                length: 16,
+                payload: None,
+            },
+        ])
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+    }
 }

@@ -323,7 +323,7 @@ RIP 推进只能有一个所有者：
 
 - `1..=4`：日志、ping、Stop；
 - `5..=7`、`9..=11`、`13..=22`、`0x100`：hook/EPT 原生断点/自省；SVM 没有 NPT 原生断点路径；`13..=22` 中的用户断点等待命令需要 `native-bp`，关闭时返回 `3`；
-- `0x20..=0x26`：`MEM_*`、`SET_PHYS_MEMORY_RANGE`、`SET_SYSTEM_CR3`；
+- `0x20..=0x29`：`MEM_*`、`SET_PHYS_MEMORY_RANGE`、`SET_SYSTEM_CR3`、`GET_SYSTEM_CR3`、`GET_EXTRA_DATA`、`SET_EXTRA_DATA`；
 - `0x200..=0x206`：保留编号（选择性 TSC 已移除），VMX/SVM 都返回 `3`；
 - `0x30..=0x3a`：SVM 专属命令（VMX 返回 `3`）。
 
@@ -549,6 +549,12 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 - `0x24 MEM_STATS`：每 CPU 统计快照；
 - `0x25 SET_PHYS_MEMORY_RANGE`：`RDX` = `PHYSICAL_MEMORY_RANGE[]` 的内核 VA，`R8` = 条数；数组布局 `{ u64 start; u64 size; }`，以 `size == 0` 结束，hypervisor 在调用内复制到自己的缓存；
 - `0x26 SET_SYSTEM_CR3`：`RDX` = 新 CR3；返回 `0` 成功、`1` 无效；只接受 4 KiB 对齐的非零值。
+- `0x27 GET_SYSTEM_CR3`：返回 hypervisor 当前 `system_cr3`，供 MCP/uapp 取实时值；不要使用启动日志里的旧 CR3。
+- `0x28 GET_EXTRA_DATA`：返回 hypervisor 保存的 8 字节额外数据。
+- `0x29 SET_EXTRA_DATA`：`RDX` = 8 字节值；返回 `0`。可用于把 ntoskrnl 基址等数据通过 VMCALL 传给后续调用方，无需 deviceio 驱动。
+
+kdmapper 的 `CustomDriverEntry` 在 `Start` 后用 `NoumenHypervisorGetOsInfo()` 取得 `NtosBase`，
+再调用 `NoumenHypercallSetExtraData` 写入 ExtraData；MCP 的 `ntos_*` REST API 会优先读取它。
 
 `0x25`/`0x26` 是全局状态，不是 per-CPU 状态，调用一次即可。kdmapper 的
 `CustomDriverEntry` 在逐核 `HideSelf` 循环之后调用它们：先用
@@ -560,6 +566,7 @@ ShadowExec    : 私有副本, NX=0，执行带补丁
 - 所有入口先检查 `available()`；不可用返回 `RAX = Unsupported`；
 - 读/写 guest 用 `copy_to_guest`/`copy_from_guest`，不要直接解引用 guest VA；
 - CR3 低 12 位是 PCID，翻译前掩掉；
+- `MEM_BATCH` 的环头必须满足：`capacity` 为 `64 KiB` 到 `4 MiB` 的 2 的幂且 4 KiB 对齐，`entry_capacity == 126`，`head == 0`、`tail == 提交条数`；MCP server 单次限制为 1 条（64 KiB 环），`VirtualLock` 失败只告警不致命；
 - `MEM_BATCH` 失败条目返回 `MemError`，不要把整个环丢掉；
 - `MEM_SCAN` 的请求结构按值读入、按值写回，注意并发/TOCTOU；
 - `MemMap` 的区间表默认来自 `KernelArgs.phys_map_base`，也可由 `0x25` 替换；数组以全 0 项结尾；
@@ -759,6 +766,9 @@ CopyExecOnly --数据 violation--> RealDataOnly（不推进 RIP，重试）
 | `MEM_MAP` | 物理区间 | range_total |
 | `SET_PHYS_MEMORY_RANGE(0x25)` | 复制成功，`MEM_MAP` 返回新区间 | 数组布局、system CR3 |
 | `SET_SYSTEM_CR3(0x26)` | 返回 0，后续翻译使用新 CR3 | 4 KiB 对齐、非零 |
+| `GET_SYSTEM_CR3(0x27)` | 返回当前 system CR3 | 与 `mem_cr3` 一致 |
+| `SET_EXTRA_DATA(0x29)` | 返回 0，`GET_EXTRA_DATA` 读回同值 | 任意 8 字节值 |
+| `GET_EXTRA_DATA(0x28)` | 返回写入值 | 跨调用保存 |
 | `MEM_SCAN` | 分段 cursor/done/status 正确 | 200 B 请求布局 |
 | 多核 hook | 迁移后仍命中，事件 cpu 正确 | generation、sync |
 | 每核 ASID | 不同且非 0 | setup 的 NASID 检查 |
