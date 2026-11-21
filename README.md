@@ -19,7 +19,7 @@ Windows Sandbox 等虚拟化功能；虚拟机内运行还需开启嵌套虚拟�
 
 - Intel VMX：VMCS、EPT、VPID、MSR bitmap、MTRR、EPT hook、EPT 原生断点、HideSelf；
 - AMD SVM：VMCB、NPT、MSRPM、NPT hook、HideSelf；NPT hook 为不完整实现，且没有 NPT 原生断点；
-- VMX CPUID 全量原生透传；`hypervisor-msr` 单独控制外层 hypervisor MSR；
+- VMX CPUID 透传；`hypervisor-msr` 单独控制外层 hypervisor MSR；
 - 统一 hypercall ABI，两个后端分别分发；
 - `MEM_*` 批量读写、翻译、扫描、物理区间和统计；
 - 日志环、panic 明细，可选 COM1 串口。
