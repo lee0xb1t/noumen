@@ -15,6 +15,9 @@
 #define NOUMEN_HYPERCALL_HIDE_SELF    9ULL
 #define NOUMEN_HYPERCALL_SET_PHYS_MEMORY_RANGE 0x25ULL
 #define NOUMEN_HYPERCALL_SET_SYSTEM_CR3        0x26ULL
+#define NOUMEN_HYPERCALL_GET_SYSTEM_CR3        0x27ULL
+#define NOUMEN_HYPERCALL_GET_EXTRA_DATA        0x28ULL
+#define NOUMEN_HYPERCALL_SET_EXTRA_DATA        0x29ULL
 
 //
 // SVM-only (NPT) debug methods; ids deliberately distinct from the VMX hook
@@ -193,3 +196,19 @@ NoumenHypercallSetSystemCr3(
     _In_ UINT64 Key,
     _In_ UINT64 Cr3
 );
+
+UINT64
+NoumenHypercallGetSystemCr3(
+    _In_ UINT64 Key
+    );
+
+UINT64
+NoumenHypercallGetExtraData(
+    _In_ UINT64 Key
+    );
+
+UINT64
+NoumenHypercallSetExtraData(
+    _In_ UINT64 Key,
+    _In_ UINT64 Value
+    );

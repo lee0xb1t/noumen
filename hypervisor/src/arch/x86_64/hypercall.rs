@@ -35,6 +35,9 @@
 //! | 0x24 | `MEM_STATS` | 复制每 CPU 统计 | 目标 VA | 容量 | - | 写入条数 |
 //! | 0x25 | `SET_PHYS_MEMORY_RANGE` | 替换物理区间缓存 | 区间数组 VA | 条数 | - | 复制条数 |
 //! | 0x26 | `SET_SYSTEM_CR3` | 替换 system CR3 | CR3 | - | - | `0` 成功 / `1` 无效 |
+//! | 0x27 | `GET_SYSTEM_CR3` | 取当前 system CR3 | - | - | - | CR3 |
+//! | 0x28 | `GET_EXTRA_DATA` | 取 8 字节额外数据 | - | - | - | value |
+//! | 0x29 | `SET_EXTRA_DATA` | 设置 8 字节额外数据 | value | - | - | `0` |
 //! | 0x100 | `HOOK_HIT` | 内部：detour stub 上报命中 | hook id | 参数 | - | `0` |
 //!
 //! 未知 key -> `#UD`；未知命令：VMX 注入 `#UD`，SVM 返回 `RAX = 3`。flush 失败会注入 `#PF`/`#GP` 且不改动环形缓冲区，
@@ -114,6 +117,12 @@ pub enum Hypercall {
     SetPhysMemoryRange = 0x25,
     /// 替换 hypervisor 使用的 system CR3。
     SetSystemCr3 = 0x26,
+    /// 返回 hypervisor 当前使用的 system CR3。
+    GetSystemCr3 = 0x27,
+    /// 读取 8 字节额外数据。
+    GetExtraData = 0x28,
+    /// 写入 8 字节额外数据。
+    SetExtraData = 0x29,
     /// SVM：带显式 method 安装 hook。
     SvmHookInstall = 0x30,
     /// SVM：按 VA 移除 hook。
@@ -176,6 +185,9 @@ impl Hypercall {
             0x24 => Self::MemStats,
             0x25 => Self::SetPhysMemoryRange,
             0x26 => Self::SetSystemCr3,
+            0x27 => Self::GetSystemCr3,
+            0x28 => Self::GetExtraData,
+            0x29 => Self::SetExtraData,
             0x30 => Self::SvmHookInstall,
             0x31 => Self::SvmHookRemove,
             0x32 => Self::SvmTfStep,

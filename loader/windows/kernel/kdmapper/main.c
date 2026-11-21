@@ -45,6 +45,29 @@ SetSystemCr3(
     }
 }
 
+//
+// 把驱动定位到的 ntoskrnl 基址放进 hypervisor 的 8 字节 ExtraData。
+// MCP/其他调用方之后可以通过 GET_EXTRA_DATA 直接取，不需要 deviceio。
+//
+static
+VOID
+SetExtraData(
+    VOID
+    )
+{
+    NOUMEN_OS_INFO info;
+
+    if (!NT_SUCCESS(NoumenHypervisorGetOsInfo(&info))) {
+        return;
+    }
+
+    if (info.NtosBase != 0) {
+        NoumenHypercallSetExtraData(
+            NOUMEN_HYPERCALL_KEY,
+            info.NtosBase);
+    }
+}
+
 NTSTATUS CustomDriverEntry(
 	_In_ PDRIVER_OBJECT  kdmapperParam1,
 	_In_ PUNICODE_STRING kdmapperParam2
@@ -77,6 +100,7 @@ NTSTATUS CustomDriverEntry(
 
 	SetSystemCr3();
 	SetPhysMemoryRange();
+	SetExtraData();
 
 	ULONG count = KeQueryActiveProcessorCount(NULL);
 	ULONG i;

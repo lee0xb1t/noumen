@@ -60,6 +60,16 @@ pub(super) fn dispatch(vcpu: &mut Vcpu, ctx: &mut GuestContext, command: Hyperca
                 ctx.rax = 0;
             }
         }
+        Hypercall::GetSystemCr3 => {
+            ctx.rax = crate::hv::system_cr3();
+        }
+        Hypercall::GetExtraData => {
+            ctx.rax = crate::hv::extra_data();
+        }
+        Hypercall::SetExtraData => {
+            crate::hv::set_extra_data(ctx.rdx);
+            ctx.rax = 0;
+        }
         #[cfg(feature = "buffer-log")]
         Hypercall::LoggerInfo => diag::logger_info(ctx),
         #[cfg(feature = "buffer-log")]

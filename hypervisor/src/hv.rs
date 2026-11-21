@@ -52,6 +52,9 @@ pub static HYPERCALL_KEY: AtomicU64 = AtomicU64::new(0);
 /// by the `SetSystemCr3` hypercall after the guest is already running.
 static SYSTEM_CR3: AtomicU64 = AtomicU64::new(0);
 
+/// Loader/user supplied 8-byte opaque value shared through VMCALL.
+static EXTRA_DATA: AtomicU64 = AtomicU64::new(0);
+
 pub fn set_hypercall_key(key: u64) {
     HYPERCALL_KEY.store(key, SeqCst);
 }
@@ -71,6 +74,14 @@ pub fn system_cr3() -> u64 {
     } else {
         GLOBAL_ARGS.get().system_cr3 as u64
     }
+}
+
+pub fn set_extra_data(value: u64) {
+    EXTRA_DATA.store(value, SeqCst);
+}
+
+pub fn extra_data() -> u64 {
+    EXTRA_DATA.load(SeqCst)
 }
 
 pub fn check_features() -> HvResult<()> {

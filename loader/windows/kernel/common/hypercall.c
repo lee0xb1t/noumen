@@ -163,3 +163,28 @@ NoumenHypercallSetSystemCr3(
 {
     return noumen_vmcall(Key, NOUMEN_HYPERCALL_SET_SYSTEM_CR3, Cr3, 0);
 }
+
+UINT64
+NoumenHypercallGetSystemCr3(
+    _In_ UINT64 Key
+    )
+{
+    return noumen_vmcall(Key, NOUMEN_HYPERCALL_GET_SYSTEM_CR3, 0, 0);
+}
+
+UINT64
+NoumenHypercallGetExtraData(
+    _In_ UINT64 Key
+    )
+{
+    return noumen_vmcall(Key, NOUMEN_HYPERCALL_GET_EXTRA_DATA, 0, 0);
+}
+
+UINT64
+NoumenHypercallSetExtraData(
+    _In_ UINT64 Key,
+    _In_ UINT64 Value
+    )
+{
+    return noumen_vmcall(Key, NOUMEN_HYPERCALL_SET_EXTRA_DATA, Value, 0);
+}

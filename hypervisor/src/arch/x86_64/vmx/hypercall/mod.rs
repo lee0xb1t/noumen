@@ -110,6 +110,19 @@ pub fn dispatch(
 
             Ok(())
         }
+        Hypercall::GetSystemCr3 => {
+            context.rax = crate::hv::system_cr3();
+            Ok(())
+        }
+        Hypercall::GetExtraData => {
+            context.rax = crate::hv::extra_data();
+            Ok(())
+        }
+        Hypercall::SetExtraData => {
+            crate::hv::set_extra_data(context.rdx);
+            context.rax = 0;
+            Ok(())
+        }
         // 选择性 TSC 已移除：编号保留，返回“不支持”，避免旧 loader/uapp 的
         // TSC 面板调用时收到 #UD。
         Hypercall::TscSetTargetPid
